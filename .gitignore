@@ -1,0 +1,15 @@
+# R stuff
+
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# directories
+/archive
+
+# files
+
+/data/performance_all.xlsx
+**/data/QIIME txt file MiDAS 4.8.1.txt
+**/data/QIIME Fasta file MiDAS 4.8.1.fa

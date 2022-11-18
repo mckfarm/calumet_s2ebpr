@@ -1,0 +1,998 @@
+---
+title: "16S_analysis"
+output: html_document
+date: "2022-07-28"
+---
+
+Data exploration and analysis script for Calumet S2EBPR pilot - 16S rRNA amplicon sequencing and performance data from full-scale pilot.
+
+# Set up, data read in, and cleaning
+Packages
+```{r package set up, include=FALSE}
+
+# packages
+## data manipulation
+library(qiime2R)
+library(phyloseq)
+library(readxl)
+library(reshape2)
+library(zoo)
+library(ggpubr)
+library(microbiome)
+library(tidyverse)
+library(lubridate)
+
+## plotting
+library(ggplot2)
+library(MetBrewer)
+library(cowplot)
+library(ggcorrplot)
+library(gridExtra)
+library(ggdist)
+library(ggConvexHull)
+
+source(file.path("scripts","plotting.R"))
+
+```
+
+
+# Performance
+Data read in
+```{r message=FALSE}
+
+# all performance data in long format for plotting 
+perf_all <- read_csv(file.path("data","performance_all.csv"))
+
+perf_all$date <- as_date(perf_all$date)
+perf_all <- perf_all %>%
+  filter(date >= as_date("2021-02-22")) %>%
+  filter(date <= as_date("2021-12-13"))
+
+```
+
+
+# Microbiome
+```{r data read in microbial community}
+# 16S
+physeq <- qza_to_phyloseq(
+  features="./qiime_outputs/table_dada2.qza",
+  tree="./qiime_outputs/rooted_tree.qza",
+  taxonomy="./qiime_outputs/taxonomy.qza",
+  metadata = "./data/16S_metadata.txt"
+)
+
+# removing eukaryotes
+physeq <- subset_taxa(physeq, !Genus=="Mitochondria" & !Genus=="Chloroplast")
+
+
+# save taxonomy
+taxonomy <- as.data.frame(physeq@tax_table) %>% 
+  select(c(Kingdom,Phylum,Class,Order,Family,Genus)) %>% 
+  distinct()
+
+# relative abundance
+rel <- transform_sample_counts(physeq, function(x) x*100/sum(x))
+
+rel_df <- psmelt(rel)
+rel_df$date <- mdy(rel_df$date)
+rel_df$location <- factor(rel_df$location,levels=c("control","test","ras"))
+
+# rarefaction
+physeq2 <- rarefy_even_depth(physeq,sample.size=min(sample_sums(physeq)),
+                            rngseed=1)
+
+rarefy_level <- min(sample_sums(physeq2))
+
+samples_to_keep <- c("9/7/2021","9/13/2021","9/21/2021","9/27/2021",
+                     "10/4/2021","10/11/2021","10/18/2021","10/26/2021",
+                     "11/1/2021","11/8/2021","11/15/2021","11/22/2021",
+                     "11/29/2021","12/6/2021","12/13/2021")
+
+physeq_fall <- subset_samples(physeq2, date %in% samples_to_keep)
+physeq_fall2 <- subset_samples(physeq_fall, location != "ras")
+
+# save as df for downstream work
+count_df <- psmelt(physeq2)
+count_df$date <- mdy(count_df$date)
+count_df$location <- factor(count_df$location,levels=c("control","test","ras"))
+
+count_df_sum <- count_df %>% group_by(Genus, date, location, carbon) %>%
+  summarise(sum=sum(Abundance))
+
+```
+
+```{r misc read in, message=FALSE}
+
+# read in metadata separately 
+meta <- read.csv(file.path("data","16S_metadata.txt"), sep="\t")
+meta$date <- mdy(meta$date)
+
+```
+
+
+# Alpha and beta diversity
+## ASVs observed
+Using rarefied data
+```{r}
+observed <- plot_richness(physeq2, x="date", measures=c("Observed"))
+
+observed_df <- as_tibble(observed$data)
+observed_df$date <- mdy(observed_df$date)
+
+observed_df %>% filter(date <= as_date("2021-12-15")) %>%
+ggplot(data=., aes(x=date, y=value, color=location, shape=location)) +
+  geom_point(size=2.5,alpha=0.8) +
+  theme_classic() +
+  labs(x="Date", y="Number of ASVs observed", title="Richness") +
+  color_basins +
+  shape_basins +
+  scale_x_main +
+  ylim(350,800) +
+  guides(color=guide_legend(title="Location"), shape=guide_legend(title="Location"))
+
+ggsave(outpath_figures %>% file.path("observedrichness.tiff"),
+       height=3, width=6, units="in")
+
+observed_df %>%
+  group_by(location) %>%
+  summarise(median=median(value), max=max(value))
+
+```
+
+## Shannon diversity
+```{r}
+shannon <- plot_richness(physeq2, x="date", measures=c("Shannon"))
+
+shannon_df <- as_tibble(shannon$data)
+shannon_df$date <- mdy(shannon_df$date)
+
+my_comparisons <- list(c("ras","test"),c("control","test"),c("ras","control"))
+
+box_all <- shannon_df %>% filter(date >= as_date("2021-09-01")) %>%
+ggplot(data=., aes(x=location, y=value, color=location)) +
+  geom_boxplot() +
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(x="", y="Shannon Diversity Index") +
+  color_basins +
+  scale_x_basins + 
+  theme(legend.position="none") +
+  ylim(4.8,6.0)
+
+box_testras <- shannon_df %>% filter(location!="control") %>%
+ggplot(data=., aes(x=location, y=value, color=location)) +
+  geom_boxplot() +
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(x="", y="") +
+  color_basins +
+  scale_x_discrete(
+    limits=c("test","ras"),
+    labels=c("Test basin","RAS fermenter")) +
+  theme(legend.position="none") +
+  ylim(4.8,6.0)
+
+plot_grid(box_all,box_testras,nrow=1, labels=c("A","B"))
+
+ggsave(outpath_figures %>% file.path("shannon_location.tiff"),
+       height=3, width=8, units="in")
+
+
+shannon_df %>%
+ggplot(data=., aes(x=date, y=value, color=location, shape=location)) +
+  geom_point(size=2.5,alpha=0.8) +
+  theme_classic() +
+  labs(x="Date", y="Shannon Diversity Index",title="Alpha diversity") +
+  color_basins +
+  shape_basins + 
+  scale_x_main + 
+  ylim(4.8,6.0) +
+  guides(color=guide_legend(title="Location"), shape=guide_legend(title="Location"))
+
+ggsave(outpath_figures %>% file.path("observedshannon.tiff"),
+       height=3, width=6, units="in")
+```
+
+
+## Beta diversity
+NMDS with Bray Curtis Distances
+Do this on rareified data
+```{r}
+# make the distance matrix
+
+ndms_unifrac <- ordinate(physeq_fall, "NMDS", "unifrac", weighted=TRUE)
+
+plot_ordination(physeq_fall, ndms_unifrac, color="location", shape="location", label="timepoint") +
+  color_basins +
+  shape_basins +
+  geom_convexhull(fill=NA) + 
+  guides(color=guide_legend(title="Location"),
+         shape=guide_legend(title="Location")) +
+  theme_bw()
+
+ggsave(outpath_figures %>% file.path("nmds_bray.tiff"),
+       height=4, width=6, units="in")
+
+
+```
+
+
+# Correlations ASV to params
+## Correlation of all location ASVs to temp
+```{r}
+
+observed_subset <- observed_df %>%
+  select(date,location,air_temp,value) %>%
+  pivot_wider(names_from=location) %>%
+  select(-date)
+
+# save correlation matrix
+spear_richness <- cor(observed_subset,method="spearman",
+                      use="pairwise.complete.obs")
+
+# save significance matrix
+spear_richness_pmat <- cor_pmat(observed_subset,
+                                method="spearman",exact=F)
+
+# correlation plots
+ggcorrplot(spear_richness, p.mat=spear_richness_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="blank", colors=c("orangered3","white","lightblue"))
+
+```
+## Correlation of # of RAS and test ASVs to C dosing
+```{r}
+observed_subset <- observed_df %>%
+  filter(location != "control") %>%
+  select(date,location,value) %>%
+  pivot_wider(names_from=location)
+
+carb <- perf_all %>%
+  filter(variable=="flow_microC") %>%
+  select(-location) %>%
+  pivot_wider(names_from=variable, values_from=value)
+
+observed_carb <- observed_subset %>%
+  left_join(.,carb,by=c("date")) %>%
+  select(-c(date))
+
+# save correlation matrix
+spear_carb <- cor(observed_carb,method="spearman",use="pairwise.complete.obs")
+
+# save significance matrix
+spear_carb_pmat <- cor_pmat(observed_carb,method="spearman",exact=F)
+
+spear_carb_pmat
+
+```
+
+## Correlation of test ASVs to influent
+```{r}
+observed_subset <- observed_df %>%
+  filter(location=="test") %>%
+  select(date,value) %>%
+  rename(ASV=value)
+
+prim_eff <- perf_all %>%
+  filter(location=="test") %>%
+  pivot_wider(names_from=variable,values_from=value) %>%
+  select(-c(location))
+
+observed_test_perf <- observed_subset %>%
+  left_join(.,prim_eff,by=c("date")) %>%
+  select(-date)
+
+# save correlation matrix
+spear_test_perf <- cor(observed_test_perf,method="spearman",use="pairwise.complete.obs")
+
+# save significance matrix
+spear_test_perf_pmat <- cor_pmat(observed_test_perf,method="spearman",exact=F)
+
+# correlation plots
+ggcorrplot(spear_test_perf, p.mat=spear_test_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="blank", colors=c("orangered3","white","lightblue"))
+
+# ggplot(data=observed_test_perf,aes(x=SVI,y=ASV)) +
+#   geom_point() +
+#   geom_smooth(method="lm") +
+#   stat_cor(aes(label = paste(..rr.label.., ..p.label.., sep = "~")), color="black")
+
+```
+
+## Correlation of control basin ASVs to influent
+```{r}
+observed_subset <- observed_df %>%
+  filter(location=="control") %>%
+  select(date,value) %>%
+  rename(ASV=value)
+
+prim_eff <- perf_all %>%
+  filter(location=="control") %>%
+  pivot_wider(names_from=variable,values_from=value) %>%
+  select(-c(location))
+
+observed_control_perf <- observed_subset %>%
+  left_join(.,prim_eff,by=c("date")) %>%
+  select(-date)
+
+# save correlation matrix
+spear_control_perf <- cor(observed_control_perf,method="spearman",use="pairwise.complete.obs")
+
+# save significance matrix
+spear_control_perf_pmat <- cor_pmat(observed_control_perf,method="spearman",exact=F)
+
+# correlation plots
+ggcorrplot(spear_control_perf, p.mat=spear_control_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="blank", colors=c("orangered3","white","lightblue"))
+```
+
+
+
+# PAO/GAO
+
+## Parsing
+```{r PAO GAO}
+pao_gao_list <- c("Ca_Accumulibacter","Tetrasphaera", 
+                  "Dechloromonas","Microlunatus", "Ca_Obscuribacter",
+                  "Ca_Competibacter","Defluviicoccus",
+                  "Micropruina","Ca_Contendobacter","Propionivibrio")
+
+rel_phos <- rel_df %>% filter(Genus %in% pao_gao_list)
+
+rel_phos$Genus <- factor(rel_phos$Genus, levels=pao_gao_list)
+
+rel_phos_sum <- rel_phos %>% 
+  filter(OTU != paste(asv_dechloro[2])) %>%
+  group_by(Genus, date, location) %>%
+  summarise(sum=sum(Abundance)) %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+# count
+count_phos <- count_df %>% filter(Genus %in% pao_gao_list)
+
+count_phos$Genus <- factor(count_phos$Genus, levels=pao_gao_list)
+
+count_phos_sum <- count_phos %>% 
+  filter(OTU != paste(asv_dechloro[2])) %>%
+  group_by(Genus, date, location) %>%
+  summarise(sum=sum(Abundance)) %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+ras_dates <- subset(rel_phos_sum,location=="ras") %>%
+  ungroup() %>%
+  select(date) 
+ras_dates <- unique(ras_dates)
+
+```
+
+```{r}
+rel_phos_sum %>% filter(Genus=="Dechloromonas") %>%
+  group_by(location) %>%
+  summarise(median=median(sum, na.rm=TRUE))
+
+rel_phos_sum %>% filter(Genus=="Ca_Accumulibacter") %>%
+  group_by(location) %>%
+  summarise(median=median(sum, na.rm=TRUE))
+
+rel_phos_sum %>% filter(Genus=="Tetrasphaera") %>%
+  group_by(location) %>%
+  summarise(median=median(sum, na.rm=TRUE))
+
+rel_phos_sum %>% filter(Genus=="Ca_Competibacter") %>%
+  group_by(location) %>%
+  summarise(median=median(sum, na.rm=TRUE))
+
+rel_phos_sum %>% filter(Genus=="Ca_Competibacter") %>%
+  filter(location=="ras") %>%
+  group_by(phase) %>%
+  summarise(median=median(sum, na.rm=TRUE))
+
+```
+
+## Wilcoxon rank sum
+
+```{r}
+
+comparison_stats_all <- compare_means(sum ~ location, 
+                                      data=rel_phos_sum, group.by="Genus")
+
+my_comparisons <- list(c("ras","control"),
+                       c("ras","test"),
+                       c("control","test"))
+
+ggplot(data=rel_phos_sum,aes(x=location,y=sum,color=location,shape=location)) +
+  facet_wrap(~Genus, scales="free", ncol=4, labeller=labels_comp) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Relative abundance [%]",x="") +
+  stat_compare_means(comparisons=my_comparisons,label="p.signif",
+                     vjust=1.5,hide.ns=TRUE,
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, 2), 
+                                        symbols = c("***","**", "*", "ns"))) +
+  theme_comp +
+  color_compare +
+  scale_x_basins_short
+
+ggsave(outpath_figures %>% file.path("mean_compare_pao.tiff"),
+       width=9, height=5, units="in", dpi=300)
+
+
+```
+
+
+## Correlation
+Test vs RAS
+```{r}
+
+# # filtered out 3 genera for clarity
+rel_phos_sum %>%
+  filter(location != "control") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  ggplot(data=., aes(x=test, y=ras, color=Genus)) +
+  facet_wrap(~Genus,labeller=labels_comp,nrow=5) +
+  ylim(0,2) +
+  scale_color_manual(values = met.brewer("Archambault", 8)) +
+  geom_point() +
+  theme_classic() +
+  theme_comp +
+  labs(y="Relative abundance in RAS fermenter [%]",
+       x="Relative abundance in EBPR basin [%]")
+
+ggsave(outpath_figures %>% file.path("rel_ab_compare_rastest.tiff"),
+       width=3.5, height=8, units="in", dpi=300)
+  
+df_corr <- rel_phos_sum %>%
+  filter(location != "control") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  select(-c(date,phase)) %>%
+  drop_na()
+
+df_corr %>% group_by(Genus) %>%
+  summarise(corr_coeff = cor.test(test,ras, method="spearman")$estimate,
+            corr_pval = cor.test(test,ras,method="spearman")$p.value)
+
+
+```
+
+Control vs Test
+```{r}
+#   
+rel_phos_sum %>%
+  filter(location != "ras") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  ggplot(data=., aes(x=test, y=control, color=Genus)) +
+  facet_wrap(~Genus, labeller=labels_comp, nrow=5) +
+  scale_color_manual(values = met.brewer("Archambault", 8)) +
+  geom_point() +
+  ylim(0,1) +
+  theme_classic() +
+  theme_comp +
+  labs(y="Relative abundance in nitrification basin [%]",
+       x="Relative abundance in EBPR basin [%]")
+
+ggsave(outpath_figures %>% file.path("rel_ab_compare_controltest.tiff"),
+       width=3.5, height=8, units="in", dpi=300)
+
+  
+df_corr <- rel_phos_sum %>%
+  filter(location != "ras") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  select(-c(date,phase)) %>%
+  drop_na()
+
+df_corr %>% group_by(Genus) %>%
+  summarise(corr_coeff = cor.test(test,control, method="spearman")$estimate,
+            corr_pval = cor.test(test,control,method="spearman")$p.value)
+
+  
+  
+```
+
+
+RAS vs control 
+```{r}
+
+# # filtered out 3 genera for clarity
+rel_phos_sum %>%
+  filter(location != "test") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  ggplot(data=., aes(x=ras, y=control, color=Genus)) +
+  facet_wrap(~Genus,labeller=labels_comp,nrow=5) +
+  ylim(0,1) +
+  scale_color_manual(values = met.brewer("Archambault", 8)) +
+  geom_point() +
+  theme_classic() +
+  theme_comp +
+  labs(x="Relative abundance in RAS fermenter [%]",
+       y="Relative abundance in nitrification basin [%]")
+
+ggsave(outpath_figures %>% file.path("rel_ab_compare_rascontrol.tiff"),
+       width=3.5, height=8, units="in", dpi=300)
+  
+df_corr <- rel_phos_sum %>%
+  filter(location != "test") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  ungroup() %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  select(-c(date,phase)) %>%
+  drop_na()
+
+df_corr %>% group_by(Genus) %>%
+  summarise(corr_coeff = cor.test(ras,control, method="spearman")$estimate,
+            corr_pval = cor.test(ras,control, method="spearman")$p.value)
+
+
+
+
+```
+
+## Abundance over time
+### All PAO and GAO in test vs RAS
+```{r}
+phase_y = 4.3
+rel_phos_sum %>%
+  filter(location != "control") %>%
+  filter(date %in% ras_dates$date) %>%
+  ungroup() %>%
+  ggplot(data=.,mapping=aes(x=date, y=sum, fill=Genus)) +
+  dosing_lines +
+  geom_bar(stat="identity") + 
+  facet_wrap(~location, nrow=2, 
+             labeller=labeller(location = c("test"="EBPR basin",
+                                            "ras"="RAS fermenter"))) +
+  scale_fill_paogao +
+  labs(y="Relative abundance [%]",x="Date") +
+  theme_classic() +
+  scale_x_main +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red")
+
+ggsave(outpath_figures %>% file.path("rel_ab_rastest.tiff"),
+       width=7, height=5, units="in", dpi=300)
+
+```
+
+
+### All PAO and GAO over time 
+
+```{r}
+phase_y <- 4.5
+rel_phos_sum %>% filter(location == "test") %>%
+  ggplot(data=.,mapping=aes(x=date, y=sum, fill=Genus)) +
+  geom_bar(stat="identity") + 
+  labs(y="Relative abundance [%]",x="Date") +
+  theme_classic() +
+  scale_x_main +
+  scale_fill_paogao +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red")
+  
+ggsave(outpath_figures %>% file.path("pao_gao_test.tiff"),
+       width=6, height=4, units="in", dpi=300)
+
+```
+
+### Select PAO and GAO over time
+```{r}
+phase_y <- 4.5
+rel_phos_sum %>% filter(location == "test") %>%
+  filter(Genus %in% c("Ca_Accumulibacter","Dechloromonas","Tetrasphaera",
+                      "Ca_Competibacter","Defluviicoccus")) %>%
+  ggplot(data=.,mapping=aes(x=date, y=sum, fill=Genus)) +
+  geom_bar(stat="identity") + 
+  labs(y="Relative abundance [%]",x="Date",
+       tag="Note: \nDechloromonas genus shown\n here only includes known \n Dechloromonas PAO") +
+  theme_classic() +
+  scale_x_main +
+  dosing_lines +
+  scale_fill_paogao_select + 
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  theme(plot.tag.position = c(.89, .3),
+        plot.tag = element_text(size=6),
+        legend.key.size = unit(.75,"line"),
+        legend.text=element_text(size=8),
+        legend.title=element_text(size=9))
+  
+ggsave(outpath_figures %>% file.path("pao_gao_test_select.tiff"),
+       width=6, height=3, units="in", dpi=300)
+
+```
+
+
+
+
+
+Test basin PAO and GAO against each other
+```{r}
+
+rel_phos_subset <- rel_phos_sum %>%
+  ungroup() %>%
+  filter(location=="test") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  spread(key = Genus, value = sum) %>%
+  select(-c(location,date,phase))
+
+# save correlation matrix
+spear_perf_all <- cor(rel_phos_subset,method="spearman")
+
+# save significance matrix
+spear_perf_pmat <- cor_pmat(rel_phos_subset,method="spearman",exact=F)
+
+# correlation plots
+corr_paogao_test <- ggcorrplot(spear_perf_all, p.mat=spear_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="pch", colors=c("orangered3","white","lightblue")) +
+  theme(legend.position="none")
+
+corr_paogao_test
+```
+
+RAS fermenter
+```{r}
+
+rel_phos_subset <- rel_phos_sum %>%
+  ungroup() %>%
+  filter(location=="ras") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  spread(key = Genus, value = sum) %>%
+  select(-c(location,date,phase))
+
+# save correlation matrix
+spear_perf_all <- cor(rel_phos_subset,method="spearman")
+
+# save significance matrix
+spear_perf_pmat <- cor_pmat(rel_phos_subset,method="spearman",exact=F)
+
+# correlation plots
+corr_paogao_ras <- ggcorrplot(spear_perf_all, p.mat=spear_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="pch", colors=c("orangered3","white","lightblue")) +
+  theme(legend.position="none")
+
+
+corr_paogao_ras
+
+```
+
+Nitrification
+```{r}
+
+rel_phos_subset <- rel_phos_sum %>%
+  ungroup() %>%
+  filter(location=="control") %>%
+  filter(!(Genus %in% c("Defluviicoccus","Propionivibrio","Ca_Contendobacter"))) %>%
+  spread(key = Genus, value = sum) %>%
+  select(-c(location,date,phase))
+
+# save correlation matrix
+spear_perf_all <- cor(rel_phos_subset,method="spearman")
+
+# save significance matrix
+spear_perf_pmat <- cor_pmat(rel_phos_subset,method="spearman",exact=F)
+
+# correlation plots
+corr_paogao_control <- ggcorrplot(spear_perf_all, p.mat=spear_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="pch", colors=c("orangered3","white","lightblue")) +
+  theme(legend.position="none")
+
+
+corr_paogao_control
+
+```
+
+Corr plot all together
+```{r}
+plot_grid(corr_paogao_test,corr_paogao_ras,corr_paogao_control,
+          labels=c("EBPR basin","RAS fermenter","Nitrification basin"),
+          axis="tb")
+
+ggsave(outpath_figures %>% file.path("corr_paogao_all.tiff"),
+       width=7, height=7, units="in", dpi=300)
+
+
+```
+
+## Performance variable correlation analysis
+Test temp, microC, BOD with PAO and GAO
+```{r}
+
+temp_carb <- perf_all %>%
+  filter(variable=="temp" | variable=="flow_microC" | 
+           variable=="BOD") %>%
+  select(-location) %>%
+  pivot_wider(names_from=variable, values_from=value)
+
+perf_op <- perf_all %>% 
+  filter(variable=="orthoP") %>% 
+  pivot_wider(names_from=location, values_from = value) %>%
+  drop_na() %>%
+  select(-variable)
+
+# calculating removal efficiency
+perf_op$test_removal <- (perf_op$primary_eff - perf_op$test)/perf_op$primary_eff * 100
+
+perf_op_test <- perf_op %>% select(date,test_removal)
+
+rel_phos_subset <- rel_phos_sum %>%
+  select(date,location,Genus,sum,phase) %>%
+  spread(key = Genus, value = sum) %>%
+  ungroup() %>%
+  filter(location=="test") %>%
+  select(-location)
+
+perf_corr_test <- rel_phos_subset %>%
+  left_join(.,temp_carb,by=c("date")) %>%
+  left_join(.,perf_op_test,by=c("date")) %>%
+  drop_na() %>%
+  select(-c(date,phase))
+
+# save correlation matrix
+spear_perf_all <- cor(perf_corr_test,method="spearman")
+
+# save significance matrix
+spear_perf_pmat <- cor_pmat(perf_corr_test,method="spearman",exact=F)
+
+# correlation plots
+ggcorrplot(spear_perf_all, p.mat=spear_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="blank", colors=c("orangered3","white","lightblue"))
+
+ggsave(outpath_figures %>% file.path("corr_matrix_test.tiff"),
+       width=7, height=6, units="in", dpi=300)
+
+```
+
+```{r}
+ggplot(data=perf_corr_test, aes(x=BOD, y=Ca_Competibacter)) +
+  geom_point() +
+  stat_cor(method="spearman")
+```
+
+
+## Ratios of PAO and GAO
+```{r}
+df_ratio <- rel_phos_sum %>%
+  pivot_wider(names_from=Genus,values_from=sum) %>%
+  drop_na()
+
+df_ratio$comp_acc <- df_ratio$Ca_Competibacter / df_ratio$Ca_Accumulibacter
+df_ratio$comp_tet <- df_ratio$Ca_Competibacter / df_ratio$Tetrasphaera
+df_ratio$comp_dec <- df_ratio$Ca_Competibacter / df_ratio$Dechloromonas
+df_ratio$comp_def <- df_ratio$Ca_Competibacter / df_ratio$Defluviicoccus
+
+df_ratio_select <- df_ratio %>%
+  select(c(date, location, phase, comp_acc, comp_tet, comp_dec, comp_def)) %>%
+  pivot_longer(cols = starts_with("comp"), names_to="ratio", values_to="sum")
+
+df_ratio_select <- df_ratio_select[is.finite(df_ratio_select$sum),]
+
+ggplot(data=df_ratio_select, aes(x=date, y=sum, color=ratio, shape=ratio)) +
+  facet_wrap(~location, labeller=labels_basins, nrow=3) + 
+  geom_point(alpha=0.8) +
+  theme_classic() +
+  dosing_lines +
+  scale_x_main +
+  labs(x="Date", y="Relative abundance ratio") +
+  scale_color_manual(values=met.brewer("Egypt",4),
+                     labels=c("Competibacter:Accumulibacter",
+                              "Competibacter:Tetrasphaera",
+                              "Competibacter:Dechloromonas",
+                              "Competibacter:Defluviicoccus")) +
+  scale_shape_manual(values=c(17,18,19,9),
+                     labels=c("Competibacter:Accumulibacter",
+                              "Competibacter:Tetrasphaera",
+                              "Competibacter:Dechloromonas",
+                              "Competibacter:Defluviicoccus")) + 
+  guides(color=guide_legend(title="Ratio"), shape=guide_legend(title="Ratio")) +
+  theme(legend.position=c(0.25,0.85),
+        legend.key.size = unit(.75,"line"),
+        legend.text=element_text(size=8),
+        legend.title=element_text(size=9),
+        legend.box.background = element_rect(color = "black"))
+
+ggsave(outpath_figures %>% file.path("ratios.tiff"),
+       width=5.5, height=5.5, units="in", dpi=300)
+
+```
+
+
+
+# Extra
+
+
+
+## Wilcoxon rank sum 
+Comparing test basin with nitrification basin
+```{r}
+comparison <- rel_phos_sum %>%
+  ungroup() %>%
+  filter(location != "ras") %>%
+  select(-phase) %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  na.omit() %>%
+  pivot_longer(cols=c(test,control), names_to="location", values_to="sum")
+
+comparison_stats_all <- compare_means(sum ~ location, 
+                                      data=comparison, group.by="Genus")
+
+my_comparisons <- list(c("control","test"))
+
+scale_x_compare <- scale_x_discrete(
+    limits=c("control", "test"),
+    labels=c("Nitrification", "EBPR")
+)
+
+
+ggplot(data=comparison,aes(x=location,y=sum,color=location,shape=location)) +
+  facet_wrap(~Genus, scales="free", ncol=4, labeller=labels_comp) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Relative abundance [%]",x="") +
+  stat_compare_means(comparisons=my_comparisons,label="p.signif",
+                     vjust=1.5, hide.ns=TRUE) +
+  theme_comp +
+  color_compare +
+  scale_x_compare
+
+ggsave(outpath_figures %>% file.path("mean_compare.tiff"),
+       width=9, height=5, units="in", dpi=300)
+
+```
+
+
+RAS vs EBPR
+```{r}
+comparison <- rel_phos_sum %>% 
+  ungroup() %>%
+  filter(location != "control") %>%
+  select(-phase) %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  na.omit() %>%
+  pivot_longer(cols=c(test,ras), names_to="location", values_to="sum")
+
+comparison_stats_all <- compare_means(sum ~ location, 
+                                      data=comparison, group.by="Genus")
+
+my_comparisons <- list(c("ras","test"))
+
+# plotting
+scale_x_compare <- scale_x_discrete(
+    limits=c("ras", "test"),
+    labels=c("RAS", "EBPR")
+)
+
+ggplot(data=comparison,aes(x=location,y=sum,color=location,shape=location)) +
+  facet_wrap(~Genus, scales="free", ncol=4, labeller=labels_comp) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Relative abundance [%]",x="") +
+  stat_compare_means(comparisons=my_comparisons,label="p.signif",
+                     vjust=1.5,hide.ns=TRUE,
+                     symnum.args = list(cutpoints = c(0, 0.05, 2), 
+                                        symbols = c("*", "ns"))) +
+  theme_comp +
+  color_compare +
+  scale_x_compare
+
+ggsave(outpath_figures %>% file.path("mean_compare_rastest.tiff"),
+       width=9, height=5, units="in", dpi=300)
+```
+
+
+RAS vs control
+```{r}
+comparison <- rel_phos_sum %>%
+  ungroup() %>%
+  filter(location != "test") %>%
+  select(-phase) %>%
+  pivot_wider(names_from=location,values_from=sum) %>%
+  na.omit() %>%
+  pivot_longer(cols=c(control,ras), names_to="location", values_to="sum")
+
+comparison_stats_all <- compare_means(sum ~ location, 
+                                      data=comparison, group.by="Genus")
+
+my_comparisons <- list(c("ras","control"))
+
+# plotting
+scale_x_compare <- scale_x_discrete(
+    limits=c("ras", "control"),
+    labels=c("RAS", "Nitrification")
+)
+
+ggplot(data=comparison,aes(x=location,y=sum,color=location,shape=location)) +
+  facet_wrap(~Genus, scales="free", ncol=4, labeller=labels_comp) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Relative abundance [%]",x="") +
+  stat_compare_means(comparisons=my_comparisons,label="p.signif",
+                     vjust=1.5,hide.ns=TRUE,
+                     symnum.args = list(cutpoints = c(0, 0.01, 0.05, 2), 
+                                        symbols = c("**", "*", "ns"))) +
+  theme_comp +
+  color_compare +
+  scale_x_compare
+
+ggsave(outpath_figures %>% file.path("mean_compare_rascontrol.tiff"),
+       width=9, height=5, units="in", dpi=300)
+```
+
+
+
+
+## Fermenters
+```{r}
+
+
+# read in list of fermenters
+ferm <- read_csv(file.path("data", "fermenters_midas.csv"))
+count_df$ferm <- ifelse(count_df$Genus %in% ferm$genus, 1, 0)
+
+count_df_ferm <- count_df %>% filter(ferm==1) %>%
+  group_by(date,location,Genus) %>%
+  summarise(sum=sum(Abundance)) %>%
+  filter(sum > 0)
+
+count_df_ferm$perc <- count_df_ferm$sum / rarefy_level * 100
+
+tot_ferm_sum <- count_df_ferm %>%
+  group_by(date,location) %>%
+  summarise(sum_tot=sum(sum),perc_tot=sum(perc)) 
+
+ferm_tp <- ggplot(data=tot_ferm_sum,mapping=aes(x=date,y=perc_tot,color=location,shape=location)) +
+  geom_line(size = 0.5) + 
+  geom_point() + 
+  theme_classic() +
+  labs(y="Relative abundance [%]", x="Date") +
+  scale_x_main +
+  shape_basins +
+  color_basins +
+  theme(legend.position="none")
+
+ferm_box <- ggplot(data=tot_ferm_sum,mapping=aes(x=location,y=perc_tot,
+                                                 shape=location,color=location)) +
+  geom_boxplot(outlier.color=NA) + 
+  geom_point(alpha=0.5) + 
+  theme_classic() +
+  labs(y="Relative abundance [%]", x="Location") +
+  color_basins +
+  scale_x_basins +
+  shape_basins +
+  theme(legend.position="none")
+
+plot_grid(ferm_box, ferm_tp, labels=c("A","B"))
+ggsave(outpath_figures %>% file.path("fermenters.tiff"),
+       width=7, height=4, units="in")
+
+
+
+```

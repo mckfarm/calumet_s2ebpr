@@ -1,0 +1,820 @@
+---
+title: "performance_stats"
+output: html_document
+date: "2022-09-14"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(MetBrewer)
+library(ggpubr)
+library(cowplot)
+library(lubridate)
+library(ggpubr)
+library(ggdist)
+library(reshape2)
+
+source("plotting.R")
+
+```
+
+# Data read in
+```{r message=FALSE}
+
+# all performance data in long format for plotting 
+perf_all <- read_csv(file.path("data","performance_all.csv"))
+
+perf_all$date <- as_date(perf_all$date)
+perf_all <- perf_all %>%
+  filter(date >= as_date("2021-02-22")) %>%
+  filter(date <= as_date("2021-12-13"))
+
+```
+
+
+# Primary effluent summary statistics
+```{r}
+# BOD/P ratio
+perf_primeff <- perf_all %>%
+  filter(location=="primary_eff") %>%
+  select(-location) %>%
+  pivot_wider(names_from=variable, values_from=value) %>%
+  mutate(bodp = BOD/orthoP,
+         vfap = VFA/orthoP) %>%
+  pivot_longer(!date, names_to="variable",values_to="value")
+
+
+perf_primeff %>%
+  group_by(variable) %>%
+  summarise(mean=mean(value, na.rm=TRUE),
+            sd=sd(value, na.rm=TRUE),
+            median=median(value,na.rm=TRUE),
+            q25=quantile(value, 0.25, na.rm=TRUE),
+            q75=quantile(value, 0.75, na.rm=TRUE),
+            q90=quantile(value, 0.9, na.rm=TRUE))
+
+
+
+```
+
+
+# OP removal
+OP removal stats
+```{r}
+
+perf_op <- perf_all %>% 
+  filter(variable=="orthoP") %>% 
+  pivot_wider(names_from=location, values_from = value) %>%
+  drop_na() %>%
+  select(-variable)  %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+# calculating removal efficiency
+perf_op$test_removal <- (perf_op$primary_eff - perf_op$test)/perf_op$primary_eff * 100
+perf_op$control_removal <- (perf_op$primary_eff - perf_op$control)/perf_op$primary_eff * 100
+
+perf_op_long <- melt(perf_op,id.vars=c("date","phase"))
+
+stats_op_test <- perf_op %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(test, na.rm=TRUE),
+            sd=sd(test, na.rm=TRUE),
+            median=median(test,na.rm=TRUE),
+            q25=quantile(test, 0.25, na.rm=TRUE),
+            q75=quantile(test, 0.75, na.rm=TRUE),
+            q90=quantile(test, 0.9, na.rm=TRUE),
+            mean_rem=mean(test_removal, na.rm=TRUE),
+            median_rem=median(test_removal, na.rm=TRUE)) %>%
+  mutate(location="test")
+
+stats_op_con <- perf_op %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(control, na.rm=TRUE),
+            sd=sd(control, na.rm=TRUE),
+            median=median(control,na.rm=TRUE),
+            q25=quantile(control, 0.25, na.rm=TRUE),
+            q75=quantile(control, 0.75, na.rm=TRUE),
+            q90=quantile(control, 0.9, na.rm=TRUE),
+            mean_rem=mean(control_removal, na.rm=TRUE),
+            median_rem=median(control_removal, na.rm=TRUE)) %>%
+  mutate(location="control")
+
+stats_op_pe <- perf_op %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(primary_eff, na.rm=TRUE),
+            sd=sd(primary_eff, na.rm=TRUE),
+            median=median(primary_eff,na.rm=TRUE),
+            q25=quantile(primary_eff, 0.25, na.rm=TRUE),
+            q75=quantile(primary_eff, 0.75, na.rm=TRUE),
+            q90=quantile(primary_eff, 0.9, na.rm=TRUE)) %>%
+  mutate(location="primary_eff",mean_rem=NA, median_rem=NA)
+
+
+stats_op <- do.call(rbind,list(stats_op_test,stats_op_con,stats_op_pe))
+
+stats_op
+
+```
+
+OP removal plot
+```{r}
+
+# raw points over time
+phase_y <- 11.5
+
+plt_op <- perf_op_long %>% 
+  filter(variable == "control" | 
+           variable == "test" | 
+           variable == "primary_eff") %>%
+ggplot(.,aes(x=date,y=value,color=variable)) +
+  geom_point(alpha=0.7) +
+  theme_classic() +
+  labs(x="", y="OP [mgP/L]") +
+  scale_x_main +
+  dosing_lines +
+  color_inf_eff + 
+  ylim(0,phase_y) +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  guides(color=guide_legend(title="Location"),
+         shape=guide_legend(title="Location")) +
+  theme(legend.position="top")
+
+```
+
+
+
+# Nitrogen
+NOx stats
+```{r}
+
+perf_nox <- perf_all %>% 
+  filter(variable=="NOx") %>% 
+  pivot_wider(names_from=location, values_from = value) %>%
+  select(-variable)
+
+# adding phases
+perf_nox <- perf_nox %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+stats_nox_test <- perf_nox %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(test, na.rm=TRUE),
+            sd=sd(test, na.rm=TRUE),
+            median=median(test,na.rm=TRUE),
+            q25=quantile(test, 0.25, na.rm=TRUE),
+            q75=quantile(test, 0.75, na.rm=TRUE),
+            q90=quantile(test, 0.9, na.rm=TRUE)) %>%
+  mutate(location="test")
+
+stats_nox_con <- perf_nox %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(control, na.rm=TRUE),
+            sd=sd(control, na.rm=TRUE),
+            median=median(control,na.rm=TRUE),
+            q25=quantile(control, 0.25, na.rm=TRUE),
+            q75=quantile(control, 0.75, na.rm=TRUE),
+            q90=quantile(control, 0.9, na.rm=TRUE)) %>%
+  mutate(location="control")
+
+stats_nox_pe <- perf_nox %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(primary_eff, na.rm=TRUE),
+            sd=sd(primary_eff, na.rm=TRUE),
+            median=median(primary_eff,na.rm=TRUE),
+            q25=quantile(primary_eff, 0.25, na.rm=TRUE),
+            q75=quantile(primary_eff, 0.75, na.rm=TRUE),
+            q90=quantile(primary_eff, 0.9, na.rm=TRUE)) %>%
+  mutate(location="primary_eff")
+
+
+stats_nox <- do.call(rbind,list(stats_nox_test,stats_nox_con,stats_nox_pe))
+
+stats_nox
+  
+
+```
+
+TKN stats
+```{r}
+
+perf_tkn <- perf_all %>% 
+  filter(variable=="TKN") %>% 
+  pivot_wider(names_from=location, values_from = value) %>%
+  select(-variable)
+
+# calculating removal efficiency
+perf_tkn$test_removal <- (perf_tkn$primary_eff - perf_tkn$test)/perf_tkn$primary_eff * 100
+perf_tkn$control_removal <- (perf_tkn$primary_eff - perf_tkn$control)/perf_tkn$primary_eff * 100
+
+# adding phases
+perf_tkn <- perf_tkn %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+stats_tkn_test <- perf_tkn %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(test, na.rm=TRUE),
+            sd=sd(test, na.rm=TRUE),
+            median=median(test,na.rm=TRUE),
+            q25=quantile(test, 0.25, na.rm=TRUE),
+            q75=quantile(test, 0.75, na.rm=TRUE),
+            q90=quantile(test, 0.9, na.rm=TRUE),
+            mean_rem=mean(test_removal, na.rm=TRUE),
+            median_rem=median(test_removal, na.rm=TRUE)) %>%
+  mutate(location="test")
+
+stats_tkn_con <- perf_tkn %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(control, na.rm=TRUE),
+            sd=sd(control, na.rm=TRUE),
+            median=median(control,na.rm=TRUE),
+            q25=quantile(control, 0.25, na.rm=TRUE),
+            q75=quantile(control, 0.75, na.rm=TRUE),
+            q90=quantile(control, 0.9, na.rm=TRUE),
+            mean_rem=mean(control_removal, na.rm=TRUE),
+            median_rem=median(control_removal, na.rm=TRUE)) %>%
+  mutate(location="control")
+
+stats_tkn_pe <- perf_tkn %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(primary_eff, na.rm=TRUE),
+            sd=sd(primary_eff, na.rm=TRUE),
+            median=median(primary_eff,na.rm=TRUE),
+            q25=quantile(primary_eff, 0.25, na.rm=TRUE),
+            q75=quantile(primary_eff, 0.75, na.rm=TRUE),
+            q90=quantile(primary_eff, 0.9, na.rm=TRUE)) %>%
+  mutate(location="primary_eff",mean_rem=NA, median_rem=NA)
+
+stats_tkn <- do.call(rbind,list(stats_tkn_test,stats_tkn_con,stats_tkn_pe))
+stats_tkn
+  
+```
+
+Total nitrogen stats
+```{r}
+
+perf_nit <- perf_all %>% 
+  filter(variable=="TKN" | variable=="NOx") %>% 
+  pivot_wider(names_from=c(location,variable), values_from = value) %>%
+  drop_na(primary_eff_TKN) %>%
+  rowwise() %>%
+  mutate(control = sum(control_TKN, control_NOx, na.rm=TRUE)) %>%
+  mutate(test = sum(test_TKN, test_NOx, na.rm=TRUE)) %>%
+  mutate(primary_eff = sum(primary_eff_TKN, primary_eff_NOx, na.rm=TRUE)) %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+
+  
+# calculating removal efficiency
+perf_nit$test_TN_removal <- 
+  (perf_nit$primary_eff - perf_nit$test)/perf_nit$primary_eff * 100
+perf_nit$control_TN_removal <- 
+  (perf_nit$primary_eff - perf_nit$control)/perf_nit$primary_eff* 100
+
+perf_nit_long <- melt(perf_nit,id.vars=c("date","phase"))
+
+
+stats_nit_test <- perf_nit %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(test, na.rm=TRUE),
+            sd=sd(test, na.rm=TRUE),
+            median=median(test,na.rm=TRUE),
+            q25=quantile(test, 0.25, na.rm=TRUE),
+            q75=quantile(test, 0.75, na.rm=TRUE),
+            q90=quantile(test, 0.9, na.rm=TRUE),
+            mean_rem=mean(test_TN_removal, na.rm=TRUE),
+            median_rem=median(test_TN_removal, na.rm=TRUE)) %>%
+  mutate(location="test")
+
+stats_nit_con <- perf_nit %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(control, na.rm=TRUE),
+            sd=sd(control, na.rm=TRUE),
+            median=median(control,na.rm=TRUE),
+            q25=quantile(control, 0.25, na.rm=TRUE),
+            q75=quantile(control, 0.75, na.rm=TRUE),
+            q90=quantile(control, 0.9, na.rm=TRUE),
+            mean_rem=mean(control_TN_removal, na.rm=TRUE),
+            median_rem=median(control_TN_removal, na.rm=TRUE)) %>%
+  mutate(location="control")
+
+stats_nit_pe <- perf_nit %>%
+  group_by(phase) %>% 
+  summarise(mean=mean(primary_eff, na.rm=TRUE),
+            sd=sd(primary_eff, na.rm=TRUE),
+            median=median(primary_eff,na.rm=TRUE),
+            q25=quantile(primary_eff, 0.25, na.rm=TRUE),
+            q75=quantile(primary_eff, 0.75, na.rm=TRUE),
+            q90=quantile(primary_eff, 0.9, na.rm=TRUE)) %>%
+  mutate(location="value",mean_rem=NA, median_rem=NA)
+
+stats_nit <- do.call(rbind,list(stats_nit_test,stats_nit_con,stats_nit_pe))
+
+stats_nit
+
+
+```
+
+Total nitrogen plot (with OP plot)
+```{r}
+phase_y = 65
+
+plt_nit <- perf_nit_long %>% 
+  filter(variable == "control" | 
+           variable == "test" | 
+           variable == "primary_eff") %>%
+ggplot(.,aes(x=date,y=value,color=variable)) +
+  geom_point(alpha=0.7) +
+  theme_classic() +
+  labs(x="Date", y="TN [mgN/L]") +
+  scale_x_main +
+  dosing_lines +
+  color_inf_eff + 
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  theme(legend.position="none")
+
+  
+plot_grid(plt_op, plt_nit, ncol=1, rel_heights=c(1,0.9),align="v")
+
+ggsave(outpath_figures %>% file.path("eff_op_nit_time.tiff"),
+       width=5, height=5, dpi=300, units="in")
+
+
+```
+
+
+Box plots TN and OP
+```{r}
+# comparing effluent by phase
+box_op <- perf_op_long %>% filter(variable == "control" | variable == "test") %>%
+ggplot(.,aes(x=phase,y=value,fill=variable)) +
+  stat_slab(position=position_dodge(width=0.8), scale=0.7, justification=-0.2) +
+  geom_boxplot(position=position_dodge(width=0.8), 
+               width=0.2, outlier.color=NA) + 
+  theme_classic() +
+  labs(x="Phase", y="Effluent OP [mgP/L]") +
+  fill_compare + 
+  theme(legend.position="none")
+
+
+box_nit <- perf_nit_long %>% filter(variable == "control" | variable == "test") %>%
+ggplot(.,aes(x=phase,y=value,fill=variable)) +
+  stat_slab(position=position_dodge(width=0.8), scale=0.7, justification=-0.2) +
+  geom_boxplot(position=position_dodge(width=0.8), 
+               width=0.2, outlier.color=NA) + 
+  theme_classic() +
+  labs(x="Phase", y="Effluent TN [mgN/L]") +
+  fill_compare
+
+perf_legend <- get_legend(box_nit)
+
+box_nit <- box_nit + theme(legend.position = "none")
+
+bottom_row <- plot_grid(perf_legend, box_nit, 
+                        rel_widths=c(0.25,1), labels=c("","B"))
+
+plot_grid(box_op, bottom_row, nrow=2, align="tblr", labels=c("A",""))
+
+ggsave(outpath_figures %>% file.path("effluent_np.tiff"),
+       width=6.3,height=5,units="in",dpi=300)
+
+```
+
+
+# MicroC
+MicroC stats
+```{r}
+perf_carb <- perf_all %>% 
+  filter(variable=="flow_microC") %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV")))) %>%
+  drop_na() %>%
+  select(-variable)
+  
+perf_carb %>%
+  group_by(phase) %>%
+  summarise(mean=mean(value, na.rm=TRUE),
+            sd=sd(value, na.rm=TRUE),
+            median=median(value,na.rm=TRUE),
+            q25=quantile(value, 0.25, na.rm=TRUE),
+            q75=quantile(value, 0.75, na.rm=TRUE),
+            q90=quantile(value, 0.9, na.rm=TRUE))
+
+perf_carb$mass <- perf_carb$value * 1.4 * 60 * 24 / 12400
+
+```
+
+MicroC dosing plot
+```{r}
+phase_y <- 1.2
+ggplot(data=perf_carb,aes(x=date,y=mass)) +
+  geom_point() +
+  scale_x_main +
+  theme_classic() +
+  dosing_lines +
+  labs(x="Date", y=expression("Carbon dose [kgCOD/m"^3*"/day]")) +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red")
+
+ggsave(filename=outpath_figures %>% file.path("microC_mass.tiff"),
+       width=5, height=2.5, units="in", dpi=300)
+
+
+```
+
+
+OP and nit relationship with carbon boxplot
+```{r}
+
+perf_op_cut <- perf_op %>% select(date,test_removal,test)
+colnames(perf_op_cut) <- c("date","op_removal","op_conc")
+
+perf_nit_cut <- perf_nit %>% select(date,test_TN_removal,test)
+colnames(perf_nit_cut) <- c("date","tn_removal","tn_conc")
+
+n_p <- left_join(perf_op_cut,perf_nit_cut,by="date")
+
+flow <- perf_all %>% 
+  filter(variable=="flow_in") %>% 
+  filter(location=="test") %>%
+  select(-c(location, variable)) %>%
+  rename(flow=value)
+
+n_p <- left_join(n_p, flow, by="date")
+
+# remove negative removal %
+n_p[n_p < 0] <- NA
+
+n_p_carb <- perf_carb %>%
+  select(date,mass) %>%
+  left_join(., n_p, by="date")
+
+n_p_carb$cut_carb <- cut(n_p_carb$mass, breaks = c(-1,0,.3,.6,.7,1.1))
+
+levels(n_p_carb$cut_carb)[1] <- "[0]" # for ease of reading plots
+
+carb_box_op <- ggplot(n_p_carb,aes(x=cut_carb,y=op_removal,fill=factor(cut_carb))) +
+  geom_boxplot(width=0.5, outlier.color = NA) +
+  geom_point(alpha=0.2, size=0.8) +
+  ylim(0,100) + 
+  labs(x=expression("Carbon dose [kgCOD/m"^3*"/day]"), y="OP removal [%]") +
+  theme_classic() +
+  theme(legend.position="none") +
+  color_box_carbon
+
+carb_box_op_conc <- ggplot(n_p_carb,aes(x=cut_carb,y=op_conc,fill=factor(cut_carb))) +
+  geom_boxplot(width=0.5, outlier.color = NA) +
+  geom_point(alpha=0.2, size=0.8) +
+  scale_y_continuous(limits=c(0,9.2),breaks=c(0,3,6,9)) +
+  labs(x=expression("Carbon dose [kgCOD/m"^3*"/day]"), y="Effluent OP [mgP/L]") +
+  theme_classic() +
+  theme(legend.position="none") +
+  color_box_carbon
+
+carb_box_tn <- ggplot(n_p_carb,aes(x=cut_carb,y=tn_removal,fill=factor(cut_carb))) +
+  geom_boxplot(width=0.5, outlier.color = NA) +
+  geom_point(alpha=0.2, size=0.8) +
+  ylim(0,100) +
+  labs(x=expression("Carbon dose [kgCOD/m"^3*"/day]"), y="TN removal [%]") +
+  theme_classic() +
+  theme(legend.position="none") +
+  color_box_carbon
+
+carb_box_tn_conc <- ggplot(n_p_carb,aes(x=cut_carb,y=tn_conc,fill=factor(cut_carb))) +
+  geom_boxplot(width=0.5, outlier.color = NA) +
+  geom_point(alpha=0.2, size=0.8) +
+  labs(x=expression("Carbon dose [kgCOD/m"^3*"/day]"), y="Effluent TN [mgN/L]") +
+  theme_classic() +
+  ylim(0,15) +
+  theme(legend.position="none") +
+  color_box_carbon
+
+plot_grid(carb_box_op, carb_box_tn, 
+          carb_box_op_conc, carb_box_tn_conc, labels=c("A","B","C","D"))
+
+ggsave(outpath_figures %>% file.path("tn_op_carbon.tiff"),
+       width=7, height=5, units="in", dpi=300)
+
+```
+
+
+
+# Carbon 
+```{r}
+perf_tot_carb <- perf_all %>% 
+  filter(variable %in% c("flow_microC","orthoP", "VFA", "BOD","flow_in")) %>%
+  filter(location != "control") %>%
+  filter(!(location == "test" & variable == "orthoP")) %>% 
+  select(-location) %>%
+  pivot_wider(names_from=variable, values_from=value) %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+perf_tot_carb$mass_microC <- perf_tot_carb$flow_microC * 1.4 * 60 * 24
+perf_tot_carb$mass_bod <- perf_tot_carb$BOD * perf_tot_carb$flow_in * 3.785 * 1E6 / 1E6
+perf_tot_carb$mass_vfa <- perf_tot_carb$VFA * perf_tot_carb$flow_in * 3.785 * 1E6 / 1E6
+perf_tot_carb$mass_op <- perf_tot_carb$orthoP * perf_tot_carb$flow_in * 3.785 * 1E6 / 1E6
+
+perf_tot_carb$bod_p <- ( perf_tot_carb$BOD ) / perf_tot_carb$orthoP
+perf_tot_carb$vfa_p <- ( perf_tot_carb$VFA ) / perf_tot_carb$orthoP
+
+perf_tot_carb$carb_p <- ( perf_tot_carb$mass_bod + perf_tot_carb$mass_microC ) / perf_tot_carb$mass_op
+
+perf_tot_carb$carb_vfa_p <- ( perf_tot_carb$mass_vfa + perf_tot_carb$mass_microC ) / perf_tot_carb$mass_op
+
+
+```
+
+
+```{r}
+
+phase_y <- 250
+bod_time <- ggplot(perf_tot_carb,aes(x=date,y=BOD)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  ylim(0,phase_y) +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="", y="BOD concentration [mg/L]") +
+  theme(axis.title.y = element_text(size = 9))
+
+phase_y <- 120
+bod_p_time <- ggplot(perf_tot_carb,aes(x=date,y=bod_p)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  ylim(0,phase_y) +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="", y="BOD/P ratio [mgBOD/mgP]") + 
+  theme(axis.title.y = element_text(size = 9))
+
+bod_box <- ggplot(perf_tot_carb,aes(x=phase,y=BOD,fill=phase)) +
+  geom_boxplot(outlier.color=NA) +
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,250) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="", y="") +
+  theme(legend.position="none")
+
+bod_p_box <- ggplot(perf_tot_carb,aes(x=phase,y=bod_p,fill=phase)) +
+  geom_boxplot(outlier.color=NA) +
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,120) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="", y="") +
+  theme(legend.position="none")
+
+carb_time <- ggplot(perf_tot_carb,aes(x=date,y=carb_p)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  ylim(0,120) +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="Date", y="Biodegradable Carbon/P ratio \n[mgBOD + mgCOD from MicroC/mgP]") +
+  theme(axis.title.y = element_text(size = 9))
+
+carb_box <- ggplot(perf_tot_carb,aes(x=phase,y=carb_p,fill=phase)) +
+  geom_boxplot(outlier.color=NA) +
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,120) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="Phase", y="") +
+  theme(legend.position="none")
+
+plot_grid(bod_time, bod_box, bod_p_time, bod_p_box, carb_time, carb_box,
+          nrow=3, labels=c("A","B","C","D","E","F")) 
+ 
+ggsave(filename=outpath_figures %>% file.path("bod.tiff"),
+       width=7, height=8, units="in", dpi=300)
+
+```
+
+VFA
+```{r}
+
+phase_y <- 80
+vfa_time <- ggplot(perf_tot_carb,aes(x=date,y=VFA)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="", y="VFA [mgCOD/L]")
+
+vfa_box <- ggplot(perf_tot_carb,aes(x=phase, y=VFA, fill=phase)) +
+  geom_boxplot(outlier.color=NA) + 
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,phase_y) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="", y="") +
+  theme(legend.position="none")
+
+
+phase_y <- 25
+vfap_time <- ggplot(perf_tot_carb,aes(x=date,y=vfa_p)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  dosing_lines +
+  ylim(0,25) +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="", y="VFA/P [mgCOD/mgP]")
+
+vfap_box <- ggplot(perf_tot_carb,aes(x=phase,y=vfa_p,fill=phase)) +
+  geom_boxplot(outlier.color=NA) +
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,25) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="", y="") +
+  theme(legend.position="none")
+
+vfa_p_time <- ggplot(perf_tot_carb,aes(x=date,y=carb_vfa_p)) +
+  geom_point() + 
+  scale_x_main +
+  theme_classic() +
+  ylim(0, phase_y) +
+  dosing_lines +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") + 
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") + 
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") +
+  labs(x="Date", y="Biodegradable Carbon/P ratio \n[mgCOD from VFA and MicroC/mgP]") +
+  theme(axis.title.y = element_text(size = 8))
+
+vfa_p_box <- ggplot(perf_tot_carb,aes(x=phase,y=carb_vfa_p,fill=phase)) +
+  geom_boxplot(outlier.color=NA) +
+  geom_point(alpha=0.3, size=0.8) +
+  theme_classic() +
+  ylim(0,phase_y) +
+  scale_fill_manual(values=met.brewer("Benedictus", 4)) +
+  labs(x="Phase", y="") +
+  theme(legend.position="none")
+
+plot_grid(vfa_time, vfa_box, vfap_time, vfap_box, vfa_p_time, vfa_p_box,
+          labels=c("A","B","C","D","E","F"), nrow=3)
+
+ggsave(filename=outpath_figures %>% file.path("vfa.tiff"),
+       width=7, height=8, units="in", dpi=300)
+
+```
+## Carbon stats
+```{r}
+perf_tot_carb %>%
+  group_by(phase) %>%
+  summarise(median_vfa=median(carb_vfa_p,na.rm=TRUE),
+            median_vfa_only=median(vfa_p,na.rm=TRUE),
+            median_bod=median(carb_p,na.rm=TRUE)) 
+
+
+```
+
+
+
+# Misc
+Air temp
+```{r}
+
+phase_y <- 90
+
+perf_all %>% filter(variable=="temp") %>%
+  ggplot(data=.,aes(x=date,y=value)) +
+  geom_point() +
+  scale_x_main +
+  theme_classic() +
+  dosing_lines +
+  labs(x="Date", y=expression(paste(Air~temperature~"[",degree*C,"]"))) +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red")
+
+ggsave(filename=outpath_figures %>% file.path("air_temp.tiff"),
+       width=5, height=2.5, units="in", dpi=300)
+
+
+```
+
+SVI
+```{r}
+phase_y <- 130
+
+perf_all %>% filter(variable=="SVI") %>%
+  ggplot(data=.,aes(x=date,y=value,color=location)) +
+  geom_point() +
+  scale_x_main +
+  theme_classic() +
+  color_compare + 
+  dosing_lines +
+  labs(x="Date", y="SVI [mL/g]") +
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red")
+
+ggsave(filename=outpath_figures %>% file.path("svi.tiff"),
+       width=5, height=2.5, units="in", dpi=300)
+
+
+```
+
+## HRT
+```{r}
+perf_all %>% filter(location=="test") %>% filter(variable=="flow_in") %>%
+  mutate(hrt = 68200 / (value / 264.2 * 1E6 )* 24) %>%
+  summarise(median=median(hrt,na.rm=TRUE))
+
+
+
+```
+
+
+
+# Correlation
+```{r}
+
+perf_all_wide <- perf_all %>%
+  filter(location!="control") %>%
+  filter(variable != "flow_in") %>%
+  filter(variable != "flow_ras") %>%
+  filter(variable != "flow_waste") %>%
+  filter(variable != "NH3") %>%
+  filter(variable != "MLSS") %>%
+  filter(date >= as_date("2021-02-22")) %>%
+  filter(date <= as_date("2021-12-13")) %>% 
+  pivot_wider(names_from=c(location,variable), values_from=value)
+
+perf_all_wide <- perf_all_wide %>%
+  rowwise() %>%
+  mutate(test_TN = sum(test_TKN, test_NOx, na.rm=TRUE)) %>%
+  mutate(primary_eff_TN = sum(primary_eff_TKN, primary_eff_NOx, na.rm=TRUE)) %>%
+  mutate(test_TN_removal = (primary_eff_TN - test_TN)/primary_eff_TN *100) %>%
+  mutate(test_OP_removal = (primary_eff_orthoP - test_orthoP)/primary_eff_orthoP *100) %>%
+  select(-c(date, primary_eff_TKN, primary_eff_NOx, primary_eff_TN, primary_eff_orthoP,
+            test_TKN, test_NOx))
+
+
+# save correlation matrix
+spear_perf_all <- cor(perf_all_wide,method="spearman",use="pairwise.complete.obs")
+
+# save significance matrix
+spear_perf_pmat <- cor_pmat(perf_all_wide,method="spearman",exact=F,use="pairwise.complete.obs")
+
+# correlation plots
+ggcorrplot(spear_perf_all, p.mat=spear_perf_pmat,
+           type="lower", lab="true", sig.level=0.05,
+           insig="blank", colors=c("orangered3","white","lightblue"))
+
+ggsave(outpath_figures %>% file.path("corr_matrix_perf.tiff"),
+       width=7, height=6, units="in", dpi=300)
+
+
+```
+
+```{r}
+ggplot(perf_all_wide,aes(x=test_orthoP,y=test_flow_microC)) + 
+  geom_point() +
+  geom_smooth(method="lm") +
+  stat_cor(method="spearman")
+```
+
+

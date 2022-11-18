@@ -1,0 +1,171 @@
+---
+title: "core_analysis"
+output: html_document
+date: "2022-09-13"
+---
+
+```{r setup, include=FALSE}
+# packages
+## data manipulation
+library(qiime2R)
+library(phyloseq)
+library(reshape2)
+library(zoo)
+library(ggpubr)
+library(microbiome)
+library(tidyverse)
+library(lubridate)
+
+## plotting
+library(ggplot2)
+library(MetBrewer)
+library(cowplot)
+library(ggcorrplot)
+library(VennDiagram)
+library(gridExtra)
+library(ggdist)
+
+outpath_figures <- file.path("results","manuscript")
+
+```
+
+# Data read in
+```{r}
+# 16S
+physeq <- qza_to_phyloseq(
+  features="./qiime_outputs/table_dada2.qza",
+  tree="./qiime_outputs/rooted_tree.qza",
+  taxonomy="./qiime_outputs/taxonomy.qza",
+  metadata = "./data/16S_metadata.txt"
+)
+
+# removing eukaryotes
+physeq <- subset_taxa(physeq, !Genus=="Mitochondria" & !Genus=="Chloroplast")
+
+# relative abundance
+rel <- transform_sample_counts(physeq, function(x) x*100/sum(x))
+```
+
+# Core Microbiome
+```{r}
+
+rel_glom <- aggregate_taxa(rel,level="Genus")
+
+# plotting
+venn_col <- met.brewer("Moreau", 3)
+
+```
+
+```{r strict core}
+
+core_test <- core(subset_samples(rel_glom,location=="test"),
+                 detection = 0.1, prevalence = 90/100)
+
+core_control <- core(subset_samples(rel_glom,location=="control"),
+                 detection = 0.1, prevalence = 90/100)
+
+core_ras <- core(subset_samples(rel_glom,location=="ras"),
+                 detection = 0.1, prevalence = 90/100)
+
+core_test_df <- psmelt(core_test)
+core_control_df <- psmelt(core_control)
+core_ras_df <- psmelt(core_ras)
+
+core_strict_df <- rbind(core_test_df, core_control_df, core_ras_df)
+
+core_taxa_test <- as.list(unique(core_test_df$Genus))
+core_taxa_control <- as.list(unique(core_control_df$Genus))
+core_taxa_ras <- as.list(unique(core_ras_df$Genus))
+
+plot_venn_core <- venn.diagram(
+  x = list(core_taxa_test,core_taxa_ras,core_taxa_control),
+  category.names = c("Test basin","RAS fermenter","Nitrification basin"),
+  print.mode=c("raw","percent"),
+  fontfamily = "sans", cat.fontfamily = "sans",
+  col=venn_col, fill=venn_col, cat.col = venn_col, alpha=0.5,
+  cex = 1, cat.cex = 1, label.col="white",
+  cat.fontface = "bold",
+  cat.default.pos = "outer",
+  cat.pos = c(-27, 27, 135),
+  cat.dist = c(0.055, 0.055, 0.085),
+  rotation = 1, lwd = 1,
+  filename = NULL
+)
+
+
+```
+
+```{r general core}
+
+core_test <- core(subset_samples(rel_glom,location=="test"),
+                 detection = 0.1, prevalence = 50/100)
+
+core_control <- core(subset_samples(rel_glom,location=="control"),
+                 detection = 0.1, prevalence = 50/100)
+
+core_ras <- core(subset_samples(rel_glom,location=="ras"),
+                 detection = 0.1, prevalence = 50/100)
+
+core_test_df <- psmelt(core_test)
+core_control_df <- psmelt(core_control)
+core_ras_df <- psmelt(core_ras)
+
+core_general_df <- rbind(core_test_df, core_control_df, core_ras_df)
+
+core_taxa_test <- as.list(unique(core_test_df$Genus))
+core_taxa_control <- as.list(unique(core_control_df$Genus))
+core_taxa_ras <- as.list(unique(core_ras_df$Genus))
+
+plot_venn_general <- venn.diagram(
+  x = list(core_taxa_test,core_taxa_ras,core_taxa_control),
+  category.names = c("Test basin","RAS fermenter","Nitrification basin"),
+  print.mode=c("raw","percent"),
+  fontfamily = "sans", cat.fontfamily = "sans",
+  col=venn_col, fill=venn_col, cat.col = venn_col, alpha=0.5,
+  cex = 1, cat.cex = 1, label.col="white",
+  cat.fontface = "bold",
+  cat.default.pos = "outer",
+  cat.pos = c(-27, 27, 135),
+  cat.dist = c(0.055, 0.055, 0.085),
+  rotation = 1, lwd=1,
+  filename = NULL
+)
+
+
+```
+
+```{r venn combined plot}
+
+plot_grid(grobTree(plot_venn_core), grobTree(plot_venn_general), 
+          labels = c("Strict core","General core"),
+          scale=0.8)
+ggsave(outpath_figures %>% file.path("core_taxa.tiff"), 
+       width=10, height=5, units="in", dpi=300)
+
+```
+
+
+```{r core taxa averages}
+
+core_strict_average <- 
+  core_strict_df %>%
+  group_by(location, Genus) %>%
+  mutate(average = mean(Abundance)) %>%
+  select(-c(date, Abundance, OTU, Sample, carbon)) %>%
+  distinct() %>%
+  pivot_wider(names_from = location, values_from = average)
+
+core_general_average <- 
+  core_general_df %>%
+  group_by(location, Genus) %>%
+  mutate(average = mean(Abundance)) %>%
+  select(-c(date, Abundance, OTU, Sample, carbon)) %>%
+  distinct() %>%
+  pivot_wider(names_from = location, values_from = average)
+
+write.csv(core_strict_average, outpath_figures %>% file.path("core_strict.csv"))
+write.csv(core_general_average, outpath_figures %>% file.path("core_general.csv"))
+
+```
+
+

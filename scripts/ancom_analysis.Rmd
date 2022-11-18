@@ -1,0 +1,370 @@
+---
+title: "ancom_analysis"
+output: html_document
+date: "2022-09-13"
+---
+
+
+```{r setup, include=FALSE}
+# packages
+## data manipulation
+library(qiime2R)
+library(phyloseq)
+library(reshape2)
+library(ggpubr)
+library(microbiome)
+library(tidyverse)
+library(lubridate)
+library(ANCOMBC)
+
+## plotting
+library(ggplot2)
+library(MetBrewer)
+library(cowplot)
+
+outpath_figures <- file.path("results","manuscript")
+```
+
+
+# Data read in
+```{r}
+# 16S
+physeq <- qza_to_phyloseq(
+  features="./qiime_outputs/table_dada2.qza",
+  tree="./qiime_outputs/rooted_tree.qza",
+  taxonomy="./qiime_outputs/taxonomy.qza",
+  metadata = "./data/16S_metadata.txt"
+)
+
+# removing eukaryotes
+physeq <- subset_taxa(physeq, !Genus=="Mitochondria" & !Genus=="Chloroplast")
+
+```
+
+
+# Physeq object set up
+```{r}
+
+physeq_glom <- aggregate_taxa(physeq, "Genus")
+physeq_glom_date <- subset_samples(physeq_glom, timepoint >=183)
+physeq_test_ras <- subset_samples(physeq_glom, location != "control")
+
+taxonomy <- as.data.frame(physeq@tax_table) %>% 
+  select(c(Kingdom,Phylum,Class,Order,Family,Genus)) %>% 
+  distinct()
+
+```
+
+# Analysis
+## RAS vs Test 
+(RAS is first alphabetically so comparisons are RAS to Test)
+```{r}
+
+out_1 <- ancombc(phyloseq = physeq_test_ras, 
+                 formula = "location + carbon + air_temp + timepoint", 
+              p_adj_method = "holm", prv_cut = 0.1, lib_cut = 0, 
+              group=NULL, conserve = TRUE, alpha = 0.05, global = FALSE)
+
+# extracting log fold change and standard error
+res_1 <- out_1$res
+
+df_lfc_1 <- data.frame(res_1$lfc * res_1$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+
+df_se_1 <- data.frame(res_1$se * res_1$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+
+colnames(df_se_1)[-1] <- paste0(colnames(df_se_1)[-1], "SE")
+
+
+```
+
+
+carbon dosing 
+```{r}
+
+# combining log fold change and standard error
+df_fig_carbon <- df_lfc_1 %>%
+  left_join(df_se_1, by = "taxon_id") %>%
+  transmute(taxon_id, carbony, carbonySE) %>%
+  filter(carbony != 0) %>%
+  arrange(-desc(carbony)) %>%
+  mutate(direct = ifelse(carbony > 0, "Positive LFC", "Negative LFC"))
+df_fig_carbon$direct <- factor(df_fig_carbon$direct, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_fig_carbon$phylum <- taxonomy[match(df_fig_carbon$taxon_id,taxonomy$Genus),"Phylum"]
+
+df_fig_carbon$name <- paste(as.character(df_fig_carbon$phylum),
+                            ";", as.character(df_fig_carbon$taxon_id), sep="")
+
+df_fig_carbon$name <- factor(df_fig_carbon$name, levels = df_fig_carbon$name)
+
+df_fig_carbon
+
+
+ggplot(data = df_fig_carbon, 
+           aes(x = carbony, y = name, fill=direct)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = carbony - carbonySE, 
+                    xmax = carbony + carbonySE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, 
+       title="") + 
+  theme_bw() + 
+  xlim(-2,1) +
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+ggsave(outpath_figures %>% file.path("lfc_carbon.tiff"),
+       width=6, height=4, units="in", dpi=300)
+
+```
+
+
+location
+```{r}
+
+# combining log fold change and standard error
+df_fig_location <- df_lfc_1 %>%
+  left_join(df_se_1, by = "taxon_id") %>%
+  transmute(taxon_id, locationtest, locationtestSE) %>%
+  filter(locationtest != 0) %>%
+  arrange(-desc(locationtest)) %>%
+  mutate(direction = ifelse(locationtest > 0, "Positive LFC", "Negative LFC"))
+df_fig_location$direction <- factor(df_fig_location$direction, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_fig_location$phylum <- taxonomy[match(df_fig_location$taxon_id,taxonomy$Genus),"Phylum"]
+
+df_fig_location$name <- paste(as.character(df_fig_location$phylum), 
+                            ";", as.character(df_fig_location$taxon_id), sep="")
+
+df_fig_location$name <- factor(df_fig_location$name, levels = df_fig_location$name)  
+
+# plotting and output
+ggplot(data = df_fig_location, 
+           aes(x = locationtest, y = name, fill=direction)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = locationtest - locationtestSE, 
+                    xmax = locationtest + locationtestSE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, title="RAS fermenter vs EBPR basin") + 
+  theme_bw() + 
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+ggsave(outpath_figures %>% file.path("lfc_ras_test.tiff"),
+       width=6, height=5, units="in", dpi=300)
+
+
+```
+
+
+Air temp effect
+```{r}
+# combining log fold change and standard error
+df_fig_temp <- df_lfc_1 %>%
+  left_join(df_se_1, by = "taxon_id") %>%
+  transmute(taxon_id, air_temp, air_tempSE) %>%
+  filter(air_temp != 0) %>%
+  arrange(-desc(air_temp)) %>%
+  mutate(direction = ifelse(air_temp > 0, "Positive LFC", "Negative LFC"))
+df_fig_temp$direction <- factor(df_fig_temp$direct, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_fig_temp$phylum <- taxonomy[match(df_fig_temp$taxon_id,taxonomy$Genus),"Phylum"]
+
+df_fig_temp$name <- paste(as.character(df_fig_temp$phylum), 
+                            ";", as.character(df_fig_temp$taxon_id), sep="")
+
+df_fig_temp$name <- factor(df_fig_temp$name, levels = df_fig_temp$name)  
+
+# adding phylum name
+
+write.csv(df_fig_temp, outpath_figures %>% file.path("temp_test_ras.csv"),
+          row.names = FALSE)
+
+# filter out unresolved genera
+df_fig_temp <- df_fig_temp %>%
+  filter(!grepl("midas_g", taxon_id))
+
+df_fig_temp$name <- paste(as.character(df_fig_temp$phylum), 
+                            ";", as.character(df_fig_temp$taxon_id), sep="")
+
+df_fig_temp$name <- factor(df_fig_temp$name, levels = df_fig_temp$name)  
+
+# plotting and output
+ggplot(data = df_fig_temp, 
+           aes(x = air_temp, y = name, fill=direction)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = air_temp - air_tempSE, 
+                    xmax = air_temp + air_tempSE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, title="Air temperature effect") + 
+  theme_bw() + 
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+
+ggsave(outpath_figures %>% file.path("lfc_rastest_temp.tiff"),
+       width=6.5, height=7, units="in", dpi=300)
+
+```
+
+
+
+## All locations
+
+```{r}
+out_4 <- ancombc(phyloseq = physeq_glom_date, 
+                 formula = "location + air_temp + timepoint", 
+              p_adj_method = "holm", prv_cut = 0.1, lib_cut = 0, 
+              group=NULL, conserve = TRUE, alpha = 0.05, global = FALSE)
+
+# extracting log fold change and standard error
+res_4 <- out_4$res
+
+df_lfc_4 <- data.frame(res_4$lfc * res_4$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+
+df_se_4 <- data.frame(res_4$se * res_4$diff_abn, check.names = FALSE) %>% 
+  rownames_to_column("taxon_id")
+
+colnames(df_se_4)[-1] <- paste0(colnames(df_se_4)[-1], "SE")
+```
+
+
+control vs test
+```{r}
+
+# combining log fold change and standard error
+df_loc_nit_test <- df_lfc_4 %>%
+  left_join(df_se_4, by = "taxon_id") %>%
+  transmute(taxon_id, locationtest, locationtestSE) %>%
+  filter(locationtest != 0) %>%
+  arrange(-desc(locationtest)) %>%
+  mutate(direction = ifelse(locationtest > 0, "Positive LFC", "Negative LFC"))
+df_loc_nit_test$direction <- factor(df_loc_nit_test$direction, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_loc_nit_test$phylum <- taxonomy[match(df_loc_nit_test$taxon_id,taxonomy$Genus),"Phylum"]
+
+write.csv(df_loc_nit_test, outpath_figures %>% file.path("location_test_nit.csv"),
+          row.names = FALSE)
+
+# filter out unresolved genera
+df_loc_nit_test <- df_loc_nit_test %>%
+  filter(!grepl("midas_g", taxon_id))
+
+df_loc_nit_test$name <- paste(as.character(df_loc_nit_test$phylum), 
+                            ";", as.character(df_loc_nit_test$taxon_id), sep="")
+
+df_loc_nit_test$name <- factor(df_loc_nit_test$name, levels = df_loc_nit_test$name)  
+
+# plotting and output
+ggplot(data = df_loc_nit_test, 
+           aes(x = locationtest, y = name, fill=direction)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = locationtest - locationtestSE, 
+                    xmax = locationtest + locationtestSE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, title="Nitrification basin vs EBPR basin") + 
+  theme_bw() + 
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+ggsave(outpath_figures %>% file.path("lfc_nit_test.tiff"),
+       width=6, height=5, units="in", dpi=300)
+
+```
+
+
+
+Control vs RAS
+```{r}
+# combining log fold change and standard error
+df_loc_nit_ras <- df_lfc_4 %>%
+  left_join(df_se_4, by = "taxon_id") %>%
+  transmute(taxon_id, locationras, locationrasSE) %>%
+  filter(locationras != 0) %>%
+  arrange(-desc(locationras)) %>%
+  mutate(direction = ifelse(locationras > 0, "Positive LFC", "Negative LFC"))
+df_loc_nit_ras$direction <- factor(df_loc_nit_ras$direction, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_loc_nit_ras$phylum <- taxonomy[match(df_loc_nit_ras$taxon_id,taxonomy$Genus),"Phylum"]
+
+write.csv(df_loc_nit_ras, outpath_figures %>% file.path("location_ras_nit.csv"),
+          row.names = FALSE)
+
+# filter out unresolved genera
+df_loc_nit_ras <- df_loc_nit_ras %>%
+  filter(!grepl("midas_g", taxon_id))
+
+df_loc_nit_ras$name <- paste(as.character(df_loc_nit_ras$phylum), 
+                            ";", as.character(df_loc_nit_ras$taxon_id), sep="")
+
+df_loc_nit_ras$name <- factor(df_loc_nit_ras$name, levels = df_loc_nit_ras$name)  
+
+# plotting and output
+ggplot(data = df_loc_nit_ras, 
+           aes(x = locationras, y = name, fill=direction)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = locationras - locationrasSE, 
+                    xmax = locationras + locationrasSE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, title="Nitrification basin vs RAS fermenter") + 
+  theme_bw() + 
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+ggsave(outpath_figures %>% file.path("lfc_nit_ras.tiff"),
+       width=6.5, height=4, units="in", dpi=300)
+
+```
+
+
+air temp effect all basins
+```{r}
+df_fig_temp <- df_lfc_4 %>%
+  left_join(df_se_4, by = "taxon_id") %>%
+  transmute(taxon_id, air_temp, air_tempSE) %>%
+  filter(air_temp != 0) %>%
+  arrange(-desc(air_temp)) %>%
+  mutate(direction = ifelse(air_temp > 0, "Positive LFC", "Negative LFC"))
+df_fig_temp$direction <- factor(df_fig_temp$direct, 
+                        levels = c("Positive LFC", "Negative LFC"))
+
+# adding phylum name
+df_fig_temp$phylum <- taxonomy[match(df_fig_temp$taxon_id,taxonomy$Genus),"Phylum"]
+
+df_fig_temp$name <- paste(as.character(df_fig_temp$phylum), 
+                            ";", as.character(df_fig_temp$taxon_id), sep="")
+
+df_fig_temp$name <- factor(df_fig_temp$name, levels = df_fig_temp$name)  
+
+# plotting and output
+ggplot(data = df_fig_temp, 
+           aes(x = air_temp, y = name, fill=direction)) + 
+  geom_bar(stat = "identity", width = 0.7, 
+           position = position_dodge(width = 0.4)) +
+  geom_errorbar(aes(xmin = air_temp - air_tempSE, 
+                    xmax = air_temp + air_tempSE), width = 0.2,
+                position = position_dodge(0.05), color="black") + 
+  labs(x = "Log fold change", y = NULL, title="Air temperature effect") + 
+  theme_bw() + 
+  scale_fill_manual(values=met.brewer("Egypt", 2)) +
+  theme(panel.grid.minor.x = element_blank(), legend.position="none")
+
+```

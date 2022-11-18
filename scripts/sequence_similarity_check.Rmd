@@ -1,0 +1,292 @@
+---
+title: "sequence_similarity"
+date: "2022-09-09"
+---
+
+```{r include=FALSE}
+
+# package read in --------
+library(qiime2R)
+library(phyloseq)
+library(Biostrings)
+library(tidyverse)
+library(ggplot2)
+library(MetBrewer)
+library(lubridate)
+library(ggpubr)
+
+source(file.path("scripts","plotting.R"))
+
+```
+
+
+# Data read in and parsing
+```{r}
+# sequence data read in and parsing -----
+physeq <- qza_to_phyloseq(
+  features ="./qiime_outputs/table_dada2.qza",
+  tree ="./qiime_outputs/rooted_tree.qza",
+  taxonomy ="./qiime_outputs/taxonomy.qza",
+  metadata = "./data/16S_metadata.txt")
+
+dechloro_seqs <- readDNAStringSet("~/GitHub/calumet_s2ebpr/phylotrees/dechloro/dechloro_seqs.fasta")
+
+ref_seqs <- readDNAStringSet("~/GitHub/calumet_s2ebpr/phylotrees/dechloro/reference_seqs.fa")
+
+midas_seqs <- readDNAStringSet("./data/QIIME Fasta file MiDAS 4.8.1.fa")
+midas_taxonomy <- read_csv("./data/midas_taxonomy.csv")
+
+# subset to dechloromonas
+reads_tot <- min(sample_sums(physeq))
+                 
+physeq2 <- rarefy_even_depth(physeq,sample.size=min(sample_sums(physeq)),
+                            rngseed=1)
+
+
+```
+
+# Dechloro
+```{r}
+
+physeq_dechloro <- subset_taxa(physeq, Genus=="Dechloromonas")
+rm(physeq)
+
+# assign sequences
+physeq_dechloro@refseq <- dechloro_seqs
+
+physeq_dechloro_df <- psmelt(physeq_dechloro)
+# write.csv(physeq_dechloro_df, "./phylotrees/dechloro/dechloro_df.csv")
+```
+
+
+## alignment set up 
+```{r}
+# Phosphoritropha
+phosphoritropha <- midas_taxonomy %>%
+  filter(species=="Ca_Dechloromonas_phosphoritropha")
+
+phosphoritropha_ref_seqs <- midas_seqs[names(midas_seqs) %in% phosphoritropha$id]
+
+# Phosphorivorans
+phosphorivorans <- midas_taxonomy %>%
+  filter(species=="Ca_Dechloromonas_phosphorivorans")
+
+phosphorivans_ref_seqs <- midas_seqs[names(midas_seqs) %in% phosphorivorans$id]
+
+# Denitrificans
+denitrificans <- ref_seqs["NR_042090.1 Dechloromonas denitrificans ED1"]
+
+```
+
+## Sequence that grouped closest to Dechloromonas phosphoritropha
+ASV sequence 8717744be592c8beffade9c24a1887b2
+
+### all seqs
+```{r}
+
+# pairwise alignment to reference
+alignment <- pairwiseAlignment(ref_seqs,
+                               dechloro_seqs[paste(asv_dechloro[1])])
+
+names <- ref_seqs@ranges@NAMES
+scores <- alignment@score
+identity <- pid(alignment)
+
+alignment_summary <- as.data.frame(list(names, scores, identity))
+colnames(alignment_summary) <- c("names","scores","identity")
+
+alignment_summary
+
+```
+
+
+### Dechloromonas phosphorivorans
+```{r}
+
+# pairwise alignment to reference
+alignment <- pairwiseAlignment(phosphorivans_ref_seqs,
+                               dechloro_seqs[paste(asv_dechloro[1])])
+
+names <- phosphorivans_ref_seqs@ranges@NAMES
+scores <- alignment@score
+identity <- pid(alignment)
+
+alignment_summary_vans <- as.data.frame(list(names, scores, identity))
+colnames(alignment_summary_vans) <- c("names","scores","identity")
+
+table(alignment_summary_vans$identity)
+mean(alignment_summary_vans$identity)
+```
+
+
+
+## Second most abundant sequence - DechloroB
+ASV sequence 56de9f39ed1fcd41057cef79f44af68
+
+```{r}
+# pairwise alignment to reference
+alignment <- pairwiseAlignment(ref_seqs,
+                               dechloro_seqs[paste(asv_dechloro[2])])
+
+names <- ref_seqs@ranges@NAMES
+scores <- alignment@score
+identity <- pid(alignment)
+
+alignment_summary <- as.data.frame(list(names, scores, identity))
+colnames(alignment_summary) <- c("names","scores","identity")
+
+alignment_summary
+
+```
+
+
+
+## Seq plots over time - parsing
+```{r}
+
+df_dechloro <- psmelt(physeq_dechloro) %>%
+  mutate(rel_ab = Abundance/reads_tot*100)
+
+df_dechloro$date <- mdy(df_dechloro$date)
+
+df_dechloro$OTU[df_dechloro$OTU == paste(asv_dechloro[1])] <- "DechloroA"
+df_dechloro$OTU[df_dechloro$OTU == paste(asv_dechloro[2])] <- "DechloroB"
+
+# make a column for the sequences that were not DechloroA or B
+df_dechloro$OTU_select <- df_dechloro$OTU
+df_dechloro$OTU_select[!(df_dechloro$OTU %in% c("DechloroA","DechloroB"))] <- "Other"
+
+
+# add phases
+df_dechloro <- df_dechloro %>%
+  mutate(phase=ifelse(date<phases$x1,"I",
+                      ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))))
+
+```
+
+### DechloroA and B over time
+```{r}
+df_dechloro %>% filter(OTU %in% c("DechloroA","DechloroB")) %>%
+ggplot(.,aes(x=date,y=rel_ab,color=OTU,shape=OTU)) +
+  facet_wrap(~location, scales="free", nrow=3, labeller=labels_basins) + 
+  geom_point() +
+  geom_line() +
+  theme_classic() + 
+  scale_color_manual(values=met.brewer("Egypt",2)) + 
+  labs(x="Date",y="Relative abundance [%]") +
+  guides(color=guide_legend(title="Sequence"),
+         shape=guide_legend(title="Sequence"))+
+  scale_x_main
+
+ggsave(outpath_figures %>% file.path("dechloro_ab_all.tiff"),
+       width=7, height=6, units="in", dpi=300)
+
+
+phase_y <- 1.8
+df_dechloro %>% filter(location != "control") %>%
+  group_by(OTU_select, date, location) %>%
+  summarise(sum=sum(rel_ab)) %>%
+ggplot(.,aes(x=date,y=sum,color=OTU_select,shape=OTU_select)) +
+  facet_wrap(~location, nrow=2, labeller=labels_basins) + 
+  geom_point(size=0.9,alpha=0.8) +
+  geom_line(alpha=0.8) +
+  theme_classic() + 
+  ylim(0,2) +
+  scale_color_manual(values=met.brewer("Egypt",3)) + 
+  labs(x="Date",y="Relative abundance [%]") +
+  guides(color=guide_legend(title="Sequence"),
+         shape=guide_legend(title="Sequence"))+
+  scale_x_main +
+  dosing_lines + 
+  annotate("text", x=as_date("2021-3-15"), y=phase_y, label="I", color="red") +
+  annotate("text", x=as_date("2021-6-1"), y=phase_y, label="II", color="red") +
+  annotate("text", x=as_date("2021-8-11"), y=phase_y, label="III", color="red") +
+  annotate("text", x=as_date("2021-10-30"), y=phase_y, label="IV", color="red") + 
+  theme(legend.key.size = unit(.75,"line"),
+        legend.text=element_text(size=8),
+        legend.title=element_text(size=9),
+        legend.position="top")
+
+ggsave(outpath_figures %>% file.path("dechloro_ab_select.tiff"),
+       width=4, height=4, units="in", dpi=300)
+
+```
+
+Wilcoxon rank sum
+```{r}
+
+df_compare <- df_dechloro %>% 
+  filter(location == "test") %>%
+  filter(phase != "I") %>%
+  group_by(date, OTU_select, phase) %>%
+  summarise(sum=sum(rel_ab))
+  
+compare_means(sum ~ phase, data=df_compare, group.by="OTU_select")
+
+my_comparisons <- list(c("II","III"), c("II","IV"), c("III","IV"))
+
+
+ggplot(data=df_compare, aes(x=phase, y=sum, color=OTU_select)) +
+  facet_wrap(~OTU_select, scales="free",nrow=3) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Relative abundance [%]",x="") +
+  scale_color_manual(values=met.brewer("Egypt",3)) + 
+  theme(legend.position="none") + 
+  stat_compare_means(comparisons=my_comparisons, label="p.signif",
+                     vjust=1.5, hide.ns=TRUE,
+                     symnum.args = list(cutpoints = c(0, 0.05, 2), 
+                                        symbols = c("*", "ns"))) 
+
+ggsave(outpath_figures %>% file.path("dechloro_compare.tiff"),
+       width=4, height=6, units="in", dpi=300)  
+```
+
+# Competibacter
+
+```{r}
+physeq_comp <- subset_taxa(physeq2, Genus=="Ca_Competibacter")
+
+df_comp <- psmelt(physeq_comp) 
+
+df_comp$date <- mdy(df_comp$date) 
+
+df_comp_summary <- df_comp %>%
+  group_by(location,OTU) %>%
+  summarise(median=median(Abundance),
+            mean=mean(Abundance))
+
+df_comp_summary
+
+asv_comp <- c("1ca02ffdb857afcb1c7ee9a62a242d33","2e3eb1c3ea32129c036b2afb0bc4a0dc","49fd0f113739c061b82e85bc55e20b59")
+
+shouldBecomeOther<-!(df_comp$OTU %in% asv_comp)
+df_comp$OTU[shouldBecomeOther] <- "Other"
+df_comp$OTU[df_comp$OTU == paste(asv_comp[1])] <- "CompA"
+df_comp$OTU[df_comp$OTU == paste(asv_comp[2])] <- "CompB"
+df_comp$OTU[df_comp$OTU == paste(asv_comp[3])] <- "CompC"
+
+df_comp <- df_comp %>%
+  group_by(location,OTU,date) %>%
+  summarise(sum=sum(Abundance)) 
+
+ggplot(df_comp,aes(x=date,y=sum,color=OTU)) +
+  facet_wrap(~location, scales="free", nrow=3, labeller=labels_basins) + 
+  geom_point(alpha=0.5) +
+  geom_line() +
+  theme_classic() + 
+  scale_color_manual(values=met.brewer("Egypt",4)) + 
+  labs(x="Date",y="Read count") +
+  guides(color=guide_legend(title="Sequence"),shape=guide_legend(title="Sequence")) +
+  scale_x_main
+
+ggsave(outpath_figures %>% file.path("comp_ab.tiff"),
+       width=7, height=6, units="in", dpi=300)
+```
+
+
+
+
+
