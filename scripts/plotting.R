@@ -10,7 +10,7 @@
 ## ---------------------------
 
 # output path
-outpath_figures <- file.path("results","manuscript")
+outpath_figures <- file.path("results","figures")
 ## format outpath in ggsave like this
 ## outpath_figures %>% file.path(NAME)
 

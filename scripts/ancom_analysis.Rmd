@@ -22,7 +22,7 @@ library(ggplot2)
 library(MetBrewer)
 library(cowplot)
 
-outpath_figures <- file.path("results","manuscript")
+outpath_figures <- file.path("results","figures")
 ```
 
 
@@ -112,7 +112,7 @@ ggplot(data = df_fig_carbon,
                     xmax = carbony + carbonySE), width = 0.2,
                 position = position_dodge(0.05), color="black") + 
   labs(x = "Log fold change", y = NULL, 
-       title="") + 
+       title="Carbon dosing effect") + 
   theme_bw() + 
   xlim(-2,1) +
   scale_fill_manual(values=met.brewer("Egypt", 2)) +

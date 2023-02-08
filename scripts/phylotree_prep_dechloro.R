@@ -39,6 +39,10 @@ physeq_dechloro <- subset_taxa(physeq, Genus=="Dechloromonas")
 dechloro_seqs <- physeq_dechloro@refseq
 writeXStringSet(dechloro_seqs, "dechloro_seqs.fasta")
 
+asv_dechloro_all <- dechloro_seqs@ranges@NAMES
+
+saveRDS(asv_dechloro_all, file=file.path("data","asv_dechloro_all.rds"))
+
 
 # picking reference seqs from midas - take first seq
 phosphoritropha <- midas_taxonomy %>%

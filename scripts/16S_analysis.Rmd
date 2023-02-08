@@ -89,7 +89,6 @@ samples_to_keep <- c("9/7/2021","9/13/2021","9/21/2021","9/27/2021",
                      "11/29/2021","12/6/2021","12/13/2021")
 
 physeq_fall <- subset_samples(physeq2, date %in% samples_to_keep)
-physeq_fall2 <- subset_samples(physeq_fall, location != "ras")
 
 # save as df for downstream work
 count_df <- psmelt(physeq2)
@@ -334,6 +333,10 @@ ggcorrplot(spear_control_perf, p.mat=spear_control_perf_pmat,
 
 ## Parsing
 ```{r PAO GAO}
+
+asv_dechloro_all <- readRDS(file.path("data","asv_dechloro_all.rds"))
+
+
 pao_gao_list <- c("Ca_Accumulibacter","Tetrasphaera", 
                   "Dechloromonas","Microlunatus", "Ca_Obscuribacter",
                   "Ca_Competibacter","Defluviicoccus",
@@ -343,8 +346,10 @@ rel_phos <- rel_df %>% filter(Genus %in% pao_gao_list)
 
 rel_phos$Genus <- factor(rel_phos$Genus, levels=pao_gao_list)
 
+asv_dechloro_remove <- setdiff(asv_dechloro_all, asv_dechloro[1])
+
 rel_phos_sum <- rel_phos %>% 
-  filter(OTU != paste(asv_dechloro[2])) %>%
+  filter(! OTU %in% asv_dechloro_remove) %>%
   group_by(Genus, date, location) %>%
   summarise(sum=sum(Abundance)) %>%
   mutate(phase=ifelse(date<phases$x1,"I",
@@ -602,8 +607,7 @@ rel_phos_sum %>% filter(location == "test") %>%
                       "Ca_Competibacter","Defluviicoccus")) %>%
   ggplot(data=.,mapping=aes(x=date, y=sum, fill=Genus)) +
   geom_bar(stat="identity") + 
-  labs(y="Relative abundance [%]",x="Date",
-       tag="Note: \nDechloromonas genus shown\n here only includes known \n Dechloromonas PAO") +
+  labs(y="Relative abundance [%]",x="Date") +
   theme_classic() +
   scale_x_main +
   dosing_lines +
@@ -615,7 +619,7 @@ rel_phos_sum %>% filter(location == "test") %>%
   theme(plot.tag.position = c(.89, .3),
         plot.tag = element_text(size=6),
         legend.key.size = unit(.75,"line"),
-        legend.text=element_text(size=8),
+        legend.text=element_text(size=9),
         legend.title=element_text(size=9))
   
 ggsave(outpath_figures %>% file.path("pao_gao_test_select.tiff"),
@@ -624,7 +628,39 @@ ggsave(outpath_figures %>% file.path("pao_gao_test_select.tiff"),
 ```
 
 
+Test basin only by phase
+```{r}
+rel_phos_sum %>% filter(location == "test") %>% 
+  filter(Genus %in% c("Ca_Accumulibacter","Dechloromonas","Tetrasphaera",
+                      "Ca_Competibacter", "Defluviicoccus")) %>%
+  ggplot(data=.,mapping=aes(x=phase, y=sum, fill=Genus)) +
+  facet_wrap(~Genus, labeller=labels_comp, nrow=1) + 
+  geom_boxplot(outlier.colour = NA) + 
+  geom_point(alpha=0.6) + 
+  labs(y="Relative abundance [%]",x="Phase") +
+  theme_bw() +
+  theme(legend.position="none",strip.text.x = element_text(size = 8)) + 
+  scale_fill_paogao_select
 
+ggsave(outpath_figures %>% file.path("pao_gao_test_box.tiff"),
+       width=6, height=2.5, units="in", dpi=300)
+```
+
+Graphical abstract little guy
+```{r}
+rel_phos_sum %>% filter(location == "test") %>% 
+  filter(Genus %in% c("Dechloromonas", "Ca_Competibacter")) %>%
+  ggplot(data=.,mapping=aes(x=phase, y=sum, fill=Genus)) +
+  geom_boxplot(outlier.colour = NA, lwd=0.5) + 
+  labs(y="% abundance",x="Phase") +
+  theme_classic() +
+  theme(legend.position="none", 
+        axis.ticks=element_blank(), axis.text=element_blank()) + 
+  scale_fill_paogao_select
+
+ggsave(outpath_figures %>% file.path("pao_gao_abstract.tiff"),
+       width=2, height=1.75, units="in", dpi=300)
+```
 
 
 Test basin PAO and GAO against each other
