@@ -77,6 +77,18 @@ rel_df <- psmelt(rel)
 rel_df$date <- mdy(rel_df$date)
 rel_df$location <- factor(rel_df$location,levels=c("control","test","ras"))
 
+# counts only
+# count_df <- psmelt(physeq)
+# count_df$date <- mdy(count_df$date)
+# count_df$location <- factor(count_df$location,levels=c("control","test","ras"))
+# 
+# count_df_sum <- count_df %>% group_by(Genus, date, location, carbon) %>%
+#   summarise(sum=sum(Abundance))
+
+```
+
+
+```{r rarefaction}
 # rarefaction
 physeq2 <- rarefy_even_depth(physeq,sample.size=min(sample_sums(physeq)),
                             rngseed=1)
@@ -99,6 +111,7 @@ count_df_sum <- count_df %>% group_by(Genus, date, location, carbon) %>%
   summarise(sum=sum(Abundance))
 
 ```
+
 
 ```{r misc read in, message=FALSE}
 
@@ -431,6 +444,32 @@ ggsave(outpath_figures %>% file.path("mean_compare_pao.tiff"),
 
 ```
 
+## counts
+```{r}
+comparison_stats_all <- compare_means(sum ~ location, 
+                                      data=count_phos_sum, group.by="Genus")
+
+my_comparisons <- list(c("ras","control"),
+                       c("ras","test"),
+                       c("control","test"))
+
+ggplot(data=count_phos_sum,aes(x=location,y=sum,color=location,shape=location)) +
+  facet_wrap(~Genus, scales="free", ncol=4, labeller=labels_comp) +
+  geom_boxplot(outlier.shape=NA) + 
+  geom_point(alpha=0.5) +
+  theme_classic() +
+  labs(y="Read count",x="") +
+  stat_compare_means(comparisons=my_comparisons,label="p.signif",
+                     vjust=1.5,hide.ns=TRUE,
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, 2), 
+                                        symbols = c("***","**", "*", "ns"))) +
+  theme_comp +
+  color_compare +
+  scale_x_basins_short
+
+ggsave(outpath_figures %>% file.path("mean_count_compare_pao.tiff"),
+       width=9, height=5, units="in", dpi=300)
+```
 
 ## Correlation
 Test vs RAS
@@ -599,6 +638,7 @@ ggsave(outpath_figures %>% file.path("pao_gao_test.tiff"),
 
 ```
 
+
 ### Select PAO and GAO over time
 ```{r}
 phase_y <- 4.5
@@ -643,6 +683,22 @@ rel_phos_sum %>% filter(location == "test") %>%
   scale_fill_paogao_select
 
 ggsave(outpath_figures %>% file.path("pao_gao_test_box.tiff"),
+       width=6, height=2.5, units="in", dpi=300)
+```
+```{r by count}
+count_phos_sum %>% filter(location == "test") %>% 
+  filter(Genus %in% c("Ca_Accumulibacter","Dechloromonas","Tetrasphaera",
+                      "Ca_Competibacter", "Defluviicoccus")) %>%
+  ggplot(data=.,mapping=aes(x=phase, y=sum, fill=Genus)) +
+  facet_wrap(~Genus, labeller=labels_comp, nrow=1) + 
+  geom_boxplot(outlier.colour = NA) + 
+  geom_point(alpha=0.6) + 
+  labs(y="Read count",x="Phase") +
+  theme_bw() +
+  theme(legend.position="none",strip.text.x = element_text(size = 8)) + 
+  scale_fill_paogao_select
+
+ggsave(outpath_figures %>% file.path("pao_gao_test_box_count.tiff"),
        width=6, height=2.5, units="in", dpi=300)
 ```
 
@@ -984,51 +1040,3 @@ ggsave(outpath_figures %>% file.path("mean_compare_rascontrol.tiff"),
 
 
 
-
-## Fermenters
-```{r}
-
-
-# read in list of fermenters
-ferm <- read_csv(file.path("data", "fermenters_midas.csv"))
-count_df$ferm <- ifelse(count_df$Genus %in% ferm$genus, 1, 0)
-
-count_df_ferm <- count_df %>% filter(ferm==1) %>%
-  group_by(date,location,Genus) %>%
-  summarise(sum=sum(Abundance)) %>%
-  filter(sum > 0)
-
-count_df_ferm$perc <- count_df_ferm$sum / rarefy_level * 100
-
-tot_ferm_sum <- count_df_ferm %>%
-  group_by(date,location) %>%
-  summarise(sum_tot=sum(sum),perc_tot=sum(perc)) 
-
-ferm_tp <- ggplot(data=tot_ferm_sum,mapping=aes(x=date,y=perc_tot,color=location,shape=location)) +
-  geom_line(size = 0.5) + 
-  geom_point() + 
-  theme_classic() +
-  labs(y="Relative abundance [%]", x="Date") +
-  scale_x_main +
-  shape_basins +
-  color_basins +
-  theme(legend.position="none")
-
-ferm_box <- ggplot(data=tot_ferm_sum,mapping=aes(x=location,y=perc_tot,
-                                                 shape=location,color=location)) +
-  geom_boxplot(outlier.color=NA) + 
-  geom_point(alpha=0.5) + 
-  theme_classic() +
-  labs(y="Relative abundance [%]", x="Location") +
-  color_basins +
-  scale_x_basins +
-  shape_basins +
-  theme(legend.position="none")
-
-plot_grid(ferm_box, ferm_tp, labels=c("A","B"))
-ggsave(outpath_figures %>% file.path("fermenters.tiff"),
-       width=7, height=4, units="in")
-
-
-
-```

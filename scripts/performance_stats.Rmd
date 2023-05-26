@@ -760,10 +760,8 @@ ggsave(filename=outpath_figures %>% file.path("svi.tiff"),
 ## HRT
 ```{r}
 perf_all %>% filter(location=="test") %>% filter(variable=="flow_in") %>%
-  mutate(hrt = 68200 / (value / 264.2 * 1E6 )* 24) %>%
+  mutate(hrt = (62000) / (value / 264.2 * 1E6 )* 24) %>%
   summarise(median=median(hrt,na.rm=TRUE))
-
-
 
 ```
 
@@ -773,7 +771,7 @@ perf_all %>% filter(location=="test") %>% filter(variable=="flow_in") %>%
 ```{r}
 
 perf_all_wide <- perf_all %>%
-  filter(location!="control") %>%
+  filter(location !="control") %>%
   filter(variable != "flow_in") %>%
   filter(variable != "flow_ras") %>%
   filter(variable != "flow_waste") %>%
