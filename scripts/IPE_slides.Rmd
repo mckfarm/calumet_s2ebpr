@@ -1,0 +1,172 @@
+---
+title: "IPE slides"
+output: html_document
+date: "2023-05-308"
+---
+
+Data viz for Innovations in Process Engineering 2023 Conference
+
+# Set up, data read in, and cleaning
+Packages
+```{r package set up, include=FALSE}
+
+# packages
+## data manipulation
+library(readxl)
+library(reshape2)
+library(tidyverse)
+library(lubridate)
+library(ggpubr)
+
+## plotting
+library(MetBrewer)
+library(patchwork)
+library(ggthemes)
+
+source(file.path("scripts", "plotting_IPE.R"))
+
+```
+
+
+# Performance
+Data read in
+```{r message=FALSE}
+
+# all performance data in long format for plotting 
+perf_all <- read_csv(file.path("data","performance_all.csv"))
+
+perf_all$date <- as_date(perf_all$date)
+perf_all <- perf_all %>%
+  filter(date >= as_date("2021-02-22")) %>%
+  filter(date <= as_date("2021-12-13"))
+
+
+# 16S
+rel_df <- read.csv(file.path("results/data/abundance_relative.csv"))
+rel_df$date <- ymd(rel_df$date)
+
+# read in metadata separately 
+meta <- read.csv(file.path("data","16S_metadata.txt"), sep="\t")
+meta$date <- mdy(meta$date)
+
+# dechloro parsing out
+asv_dechloro_all <- readRDS(file.path("data","asv_dechloro_all.rds"))
+
+```
+
+
+# PAO and GAO
+## Parsing
+```{r}
+
+pao_gao_list <- c("Ca_Accumulibacter","Tetrasphaera", "Dechloromonas",
+                  "Ca_Competibacter")
+
+rel_phos <- rel_df %>% filter(Genus %in% pao_gao_list)
+
+rel_phos$Genus <- factor(rel_phos$Genus, levels=pao_gao_list)
+
+asv_dechloro_remove <- setdiff(asv_dechloro_all, asv_dechloro[1])
+
+rel_phos_sum <- rel_phos %>% 
+  filter(! OTU %in% asv_dechloro_remove) %>%
+  group_by(Genus, date, location) %>%
+  summarise(sum = sum(Abundance)) %>%
+  filter(date >= phases$x1) %>%
+  mutate(phase=ifelse(date<phases$x2,"II",
+                             ifelse(date<phases$x3,"III","IV"))) %>%
+  mutate(carbon=ifelse(date<phases$x2,"ON",
+                             ifelse(date<phases$x3,"OFF","ON")))
+
+```
+
+```{r}
+rel_phos_sum %>% filter(location == "test") %>% filter(Genus != "Ca_Competibacter") %>%
+ggplot(data = ., aes(x = date, y = sum, fill = carbon)) +
+  facet_wrap(~Genus, labeller = labels_paogao, ncol = 1) + 
+  geom_bar(stat = "identity") + 
+  labs(y = "Relative abundance [%]", x = "") +
+  scale_x_month +
+  scale_fill_carbon +
+  theme_hc(base_size = 13) + 
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1),
+        strip.text = element_text(face = "italic"))
+
+ggsave(filename = file.path(outpath_figures, "pao_time.tiff"), height = 5, width = 4, units = "in", dpi = 300)
+
+
+rel_phos_sum %>% filter(location == "test") %>% filter(Genus == "Ca_Competibacter") %>%
+ggplot(data = ., aes(x = date, y = sum, fill = carbon)) +
+  facet_wrap(~Genus, labeller = labels_paogao, ncol = 1) + 
+  geom_bar(stat = "identity") + 
+  labs(y = "Relative abundance [%]", x = "") +
+  scale_x_month +
+  scale_fill_carbon +
+  theme_hc(base_size = 10) +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1),
+        strip.text = element_text(face = "italic"))
+
+ggsave(filename = file.path(outpath_figures, "gao_time.tiff"), height = 2, width = 4, units = "in", dpi = 300)
+
+```
+
+
+```{r}
+rel_phos_sum %>% filter(location == "test") %>% filter(Genus != "Ca_Competibacter") %>%
+ggplot(data = ., aes(x = carbon, y = sum, fill = carbon)) +
+  facet_wrap(~Genus, labeller = labels_paogao) + 
+  geom_boxplot(outlier.color = NULL) +
+  geom_point(alpha = 0.5) + 
+  labs(y = "Relative abundance [%]", x = "Carbon dosing") +
+  scale_fill_carbon + 
+  ylim(0, 1.2) +
+  theme_hc(base_size = 16) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+ggsave(filename = file.path(outpath_figures, "pao_carbon.tiff"), height = 4, width = 7, units = "in", dpi = 300)
+
+
+rel_phos_sum %>% filter(location == "test") %>%
+ggplot(data = ., aes(x = carbon, y = sum, fill = carbon)) +
+  facet_wrap(~Genus, labeller = labels_paogao, nrow = 1) + 
+  geom_boxplot(outlier.color = NULL) +
+  geom_point(alpha = 0.5) + 
+  labs(y = "", x = "Carbon dosing") +
+  scale_fill_carbon + 
+  theme_hc(base_size = 16) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+ggsave(filename = file.path(outpath_figures, "gao_carbon.tiff"), height = 4, width = 10, units = "in", dpi = 300)
+
+```
+
+
+```{r}
+rel_phos_sum %>%
+  filter(location != "ras") %>%
+  ungroup() %>%
+  pivot_wider(names_from=location, values_from=sum) %>%
+  ggplot(data=., aes(x=test, y=control, color=Genus)) +
+  facet_wrap(~Genus, labeller=labels_paogao) +
+  geom_point() +
+  theme_hc(base_size = 15) + 
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic")) + 
+  scale_color_manual(values = met.brewer("Java", 4)) + 
+  labs(y="Rel abundance in nitrification basin [%]",
+       x="Rel abundance in test basin [%]") +
+  stat_cor(method = "spearman", label.x = 0, label.y = 2.3) +
+  ylim(0, 3)
+
+ggsave(outpath_figures %>% file.path("rel_ab_compare_controltest.tiff"),
+       width=5, height=5, units="in", dpi=300)
+
+```
+
+
+
+
